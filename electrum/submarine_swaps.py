@@ -788,7 +788,7 @@ class SwapManager(Logger):
         payment_hash = sha256(preimage)
         request_data = {
             "type": "reversesubmarine",
-            "pairId": "BIT/BIT",
+            "pairId": "BTC/BTC",
             "orderSide": "buy",
             "invoiceAmount": lightning_amount_sat,
             "preimageHash": payment_hash.hex(),
@@ -882,12 +882,12 @@ class SwapManager(Logger):
         # cache data to disk
         with open(self.pairs_filename(), 'w', encoding='utf-8') as f:
             f.write(json.dumps(pairs))
-        fees = pairs['pairs']['BIT/BIT']['fees']
+        fees = pairs['pairs']['BTC/BTC']['fees']
         self.percentage = fees['percentage']
         self.normal_fee = fees['minerFees']['baseAsset']['normal']
         self.lockup_fee = fees['minerFees']['baseAsset']['reverse']['lockup']
         self.claim_fee = fees['minerFees']['baseAsset']['reverse']['claim']
-        limits = pairs['pairs']['BIT/BIT']['limits']
+        limits = pairs['pairs']['BTC/BTC']['limits']
         self._min_amount = limits['minimal']
         self._max_amount = limits['maximal']
         assert pairs.get('htlcFirst') is True
@@ -900,7 +900,7 @@ class SwapManager(Logger):
         try:
             with open(self.pairs_filename(), 'r', encoding='utf-8') as f:
                 pairs = json.loads(f.read())
-            limits = pairs['pairs']['BIT/BIT']['limits']
+            limits = pairs['pairs']['BTC/BTC']['limits']
             self._min_amount = limits['minimal']
             self._max_amount = limits['maximal']
         except Exception:
