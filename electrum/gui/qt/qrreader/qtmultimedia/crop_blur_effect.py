@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Electron Cash - lightweight BitnetIO client
+# Electron Cash - lightweight Bitnet_IO client
 # Copyright (C) 2019 Axel Gembe <derago@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person

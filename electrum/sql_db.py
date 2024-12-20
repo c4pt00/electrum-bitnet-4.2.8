@@ -14,7 +14,7 @@ def sql(func):
     returns an awaitable asyncio.Future
     """
     def wrapper(self: 'SqlDB', *args, **kwargs):
-        assert threading.currentThread() != self.sql_thread
+        assert threading.current_thread() != self.sql_thread
         f = self.asyncio_loop.create_future()
         self.db_requests.put((f, func, args, kwargs))
         return f
@@ -60,7 +60,7 @@ class SqlDB(Logger):
             if not future.cancelled():
                 self.asyncio_loop.call_soon_threadsafe(future.set_result, result)
             # note: in sweepstore session.commit() is called inside
-            # the sql-decorated methods, so commiting to disk is awaited
+            # the sql-decorated methods, so committing to disk is awaited
             if self.commit_interval:
                 i = (i + 1) % self.commit_interval
                 if i == 0:

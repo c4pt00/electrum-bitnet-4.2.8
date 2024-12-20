@@ -11,8 +11,8 @@ assert Python3Recipe.python_depends == []
 
 
 class Python3RecipePinned(util.InheritedRecipeMixin, Python3Recipe):
-    version = "3.8.8"
-    sha512sum = "1c6742cdc92ba6d3c03c63fd025bc348462517a503343685a42e22838aedc94ab2e438f1d1623b91ca1be5f39f327d76385d66b785ff93f0f3737b9870e9a003"
+    version = "3.10.14"
+    sha512sum = "113d8faf2685a7a9e868e4c0ecb2767aae3e54a8d3722a2de5ca00049b336c8728a6a6506b282326d94acc71a5c534ea706ad7b886a6ec7d15eaf46505ef233b"
 
 
 recipe = Python3RecipePinned()

@@ -13,7 +13,7 @@ from PyQt5 import QtWidgets
 from electrum import util
 from electrum.i18n import _
 
-from .util import MONOSPACE_FONT
+from .util import MONOSPACE_FONT, font_height
 
 # sys.ps1 and sys.ps2 are only declared if an interpreter is in interactive mode.
 sys.ps1 = '>>> '
@@ -32,7 +32,7 @@ class OverlayLabel(QtWidgets.QLabel):
     '''
     def __init__(self, text, parent):
         super().__init__(text, parent)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(max(150, 10 * font_height()))
         self.setGeometry(0, 0, self.width(), self.height())
         self.setStyleSheet(self.STYLESHEET)
         self.setMargin(0)
@@ -58,7 +58,7 @@ class Console(QtWidgets.QPlainTextEdit):
         self.setGeometry(50, 75, 600, 400)
         self.setWordWrapMode(QtGui.QTextOption.WrapAnywhere)
         self.setUndoRedoEnabled(False)
-        self.document().setDefaultFont(QtGui.QFont(MONOSPACE_FONT, 10, QtGui.QFont.Normal))
+        self.setFont(QtGui.QFont(MONOSPACE_FONT, 10, QtGui.QFont.Normal))
         self.newPrompt("")  # make sure there is always a prompt, even before first server.banner
 
         self.updateNamespace({'run':self.run_script})
@@ -187,6 +187,8 @@ class Console(QtWidgets.QPlainTextEdit):
             return
 
         if command and (not self.history or self.history[-1] != command):
+            while len(self.history) >= 50:
+                self.history.remove(self.history[0])
             self.history.append(command)
         self.history_index = len(self.history)
 
@@ -262,12 +264,18 @@ class Console(QtWidgets.QPlainTextEdit):
                 exec(command, self.namespace, self.namespace)
         except SystemExit:
             self.close()
-        except BaseException:
-            traceback_lines = traceback.format_exc().split('\n')
-            # Remove traceback mentioning this file, and a linebreak
-            for i in (3,2,1,-1):
-                traceback_lines.pop(i)
-            self.appendPlainText('\n'.join(traceback_lines))
+        except BaseException as e:
+            te = traceback.TracebackException.from_exception(e)
+            # rm part of traceback mentioning this file.
+            # (note: we rm stack items before converting to str, instead of removing lines from the str,
+            #        as this is more reliable. The latter would differ whether the traceback has source text lines,
+            #        which is not always the case.)
+            te.stack = traceback.StackSummary.from_list(te.stack[1:])
+            tb_str = "".join(te.format())
+            # rm last linebreak:
+            if tb_str.endswith("\n"):
+                tb_str = tb_str[:-1]
+            self.appendPlainText(tb_str)
         sys.stdout = tmp_stdout
 
     def keyPressEvent(self, event):

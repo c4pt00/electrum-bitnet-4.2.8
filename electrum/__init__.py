@@ -11,6 +11,10 @@ if is_local and os.name == 'nt':
         os.add_dll_directory(os.path.dirname(__file__))
 
 
+class GuiImportError(ImportError):
+    pass
+
+
 from .version import ELECTRUM_VERSION
 from .util import format_satoshis
 from .wallet import Wallet
@@ -25,6 +29,21 @@ from . import daemon
 from .transaction import Transaction
 from .plugin import BasePlugin
 from .commands import Commands, known_commands
+from .logging import get_logger
 
 
 __version__ = ELECTRUM_VERSION
+
+_logger = get_logger(__name__)
+
+
+# Ensure that asserts are enabled. For sanity and paranoia, we require this.
+# Code *should not rely* on asserts being enabled. In particular, safety and security checks should
+# always explicitly raise exceptions. However, this rule is mistakenly broken occasionally...
+try:
+    assert False  # noqa: B011
+except AssertionError:
+    pass
+else:
+    raise ImportError("Running with asserts disabled. Refusing to continue. Exiting...")
+

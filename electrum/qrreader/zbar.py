@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Electron Cash - lightweight BitnetIO client
+# Electron Cash - lightweight Bitnet_IO client
 # Copyright (C) 2019 Axel Gembe <derago@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person
@@ -37,8 +37,9 @@ from .abstract_base import AbstractQrCodeReader, QrCodeResult
 
 _logger = get_logger(__name__)
 
-
-if sys.platform == 'darwin':
+if 'ANDROID_DATA' in os.environ:
+    LIBNAME = 'libzbar.so'
+elif sys.platform == 'darwin':
     LIBNAME = 'libzbar.0.dylib'
 elif sys.platform in ('windows', 'win32'):
     LIBNAME = 'libzbar-0.dll'

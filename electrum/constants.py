@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2018 The Electrum developers
 #
 # Permission is hereby granted, free of charge, to any person
@@ -25,6 +25,7 @@
 
 import os
 import json
+from typing import Sequence, Tuple, Mapping, Type
 
 from .util import inv_dict, all_subclasses
 from . import bitcoin
@@ -35,7 +36,7 @@ def read_json(filename, default):
     try:
         with open(path, 'r') as f:
             r = json.loads(f.read())
-    except:
+    except Exception:
         r = default
     return r
 
@@ -53,11 +54,19 @@ class AbstractNet:
     ADDRTYPE_P2PKH: int
     ADDRTYPE_P2SH: int
     SEGWIT_HRP: str
-  #  BOLT11_HRP: str
+    BOLT11_HRP: str
     GENESIS: str
     BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS: int = 0
     BIP44_COIN_TYPE: int
     LN_REALM_BYTE: int
+    DEFAULT_PORTS: Mapping[str, str]
+    DEFAULT_SERVERS: Mapping[str, Mapping[str, str]]
+    CHECKPOINTS: Sequence[Tuple[str, int]]
+    LN_DNS_SEEDS: Sequence[str]
+    XPRV_HEADERS: Mapping[str, int]
+    XPRV_HEADERS_INV: Mapping[int, str]
+    XPUB_HEADERS: Mapping[str, int]
+    XPUB_HEADERS_INV: Mapping[int, str]
 
     @classmethod
     def max_checkpoint(cls) -> int:
@@ -68,7 +77,8 @@ class AbstractNet:
         return bytes.fromhex(bitcoin.rev_hex(cls.GENESIS))
 
 
-class BitnetIOMainnet(AbstractNet):
+class Bitnet_IOMainnet(AbstractNet):
+
     NET_NAME = "mainnet"
     TESTNET = False
     WIF_PREFIX = 0x9e
@@ -98,16 +108,14 @@ class BitnetIOMainnet(AbstractNet):
         'p2wsh':       0x02aa7ed3,  # Zpub
     }
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
-
     BIP44_COIN_TYPE = 1
     LN_REALM_BYTE = 0
-#    LN_DNS_SEEDS = [
-#'radioblockchain.info',
-#'radiopool.me',
-#]
+    LN_DNS_SEEDS = [
+        'bitexplorer.io',
+    ]
 
 
-class BitnetIOTestnet(AbstractNet):
+class Bitnet_IOTestnet(AbstractNet):
 
     NET_NAME = "testnet"
     TESTNET = True
@@ -145,7 +153,16 @@ class BitnetIOTestnet(AbstractNet):
     ]
 
 
-class BitnetIORegtest(BitnetIOTestnet):
+class Bitnet_IOTestnet4(Bitnet_IOTestnet):
+
+    NET_NAME = "testnet4"
+    GENESIS = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+    DEFAULT_SERVERS = read_json('servers_testnet4.json', {})
+    CHECKPOINTS = read_json('checkpoints_testnet4.json', [])
+    LN_DNS_SEEDS = []
+
+
+class Bitnet_IORegtest(Bitnet_IOTestnet):
 
     NET_NAME = "regtest"
     SEGWIT_HRP = "bcrt"
@@ -156,7 +173,7 @@ class BitnetIORegtest(BitnetIOTestnet):
     LN_DNS_SEEDS = []
 
 
-class BitnetIOSimnet(BitnetIOTestnet):
+class Bitnet_IOSimnet(Bitnet_IOTestnet):
 
     NET_NAME = "simnet"
     WIF_PREFIX = 0x64
@@ -170,7 +187,7 @@ class BitnetIOSimnet(BitnetIOTestnet):
     LN_DNS_SEEDS = []
 
 
-class BitnetIOSignet(BitnetIOTestnet):
+class Bitnet_IOSignet(Bitnet_IOTestnet):
 
     NET_NAME = "signet"
     BOLT11_HRP = "tbs"
@@ -183,24 +200,28 @@ class BitnetIOSignet(BitnetIOTestnet):
 NETS_LIST = tuple(all_subclasses(AbstractNet))
 
 # don't import net directly, import the module instead (so that net is singleton)
-net = BitnetIOMainnet
+net = Bitnet_IOMainnet  # type: Type[AbstractNet]
 
 def set_signet():
     global net
-    net = BitnetIOSignet
+    net = Bitnet_IOSignet
 
 def set_simnet():
     global net
-    net = BitnetIOSimnet
+    net = Bitnet_IOSimnet
 
 def set_mainnet():
     global net
-    net = BitnetIOMainnet
+    net = Bitnet_IOMainnet
 
 def set_testnet():
     global net
-    net = BitnetIOTestnet
+    net = Bitnet_IOTestnet
+
+def set_testnet4():
+    global net
+    net = Bitnet_IOTestnet4
 
 def set_regtest():
     global net
-    net = BitnetIORegtest
+    net = Bitnet_IORegtest

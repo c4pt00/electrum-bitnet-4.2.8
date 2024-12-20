@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2018 The Electrum developers
 #
 # Permission is hereby granted, free of charge, to any person
@@ -81,8 +81,10 @@ class CompletionTextEdit(ButtonsTextEdit):
             return
 
         QPlainTextEdit.keyPressEvent(self, e)
+        if self.isReadOnly():  # if field became read-only *after* keyPress, exit now
+            return
 
-        ctrlOrShift = e.modifiers() and (Qt.ControlModifier or Qt.ShiftModifier)
+        ctrlOrShift = bool(int(e.modifiers()) & int(Qt.ControlModifier | Qt.ShiftModifier))
         if self.completer is None or (ctrlOrShift and not e.text()):
             return
 

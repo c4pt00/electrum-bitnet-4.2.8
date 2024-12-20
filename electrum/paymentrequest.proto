@@ -1,5 +1,5 @@
 //
-// Simple BitnetIO Payment Protocol messages
+// Simple Bitnet_IO Payment Protocol messages
 //
 // Use fields 1000+ for extensions;
 // to avoid conflicts, register extensions via pull-req at

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2011 thomasv@gitorious
 #
 # Permission is hereby granted, free of charge, to any person
@@ -28,7 +28,7 @@ from typing import List, Tuple, TYPE_CHECKING, Optional, Union, Sequence
 import enum
 from enum import IntEnum, Enum
 
-from .util import bfh, bh2u, BitnetIOException, assert_bytes, to_bytes, inv_dict, is_hex_str
+from .util import bfh, Bitnet_IOException, assert_bytes, to_bytes, inv_dict, is_hex_str, classproperty
 from . import version
 from . import segwit_addr
 from . import constants
@@ -198,7 +198,7 @@ class opcodes(IntEnum):
 
 
 def rev_hex(s: str) -> str:
-    return bh2u(bfh(s)[::-1])
+    return bfh(s)[::-1].hex()
 
 
 def int_to_hex(i: int, length: int=1) -> str:
@@ -218,7 +218,7 @@ def int_to_hex(i: int, length: int=1) -> str:
     return rev_hex(s)
 
 def script_num_to_hex(i: int) -> str:
-    """See CScriptNum in BitnetIO Core.
+    """See CScriptNum in Bitnet_IO Core.
     Encodes an integer as hex, to be used in script.
 
     ported from https://github.com/bitcoin/bitcoin/blob/8cbc5c4be4be22aca228074f087a374a7ec38be8/src/script/script.h#L326
@@ -238,7 +238,7 @@ def script_num_to_hex(i: int) -> str:
     elif neg:
         result[-1] |= 0x80
 
-    return bh2u(result)
+    return result.hex()
 
 
 def var_int(i: int) -> str:
@@ -288,11 +288,11 @@ def push_script(data: str) -> str:
     if data_len == 0 or data_len == 1 and data[0] == 0:
         return opcodes.OP_0.hex()
     elif data_len == 1 and data[0] <= 16:
-        return bh2u(bytes([opcodes.OP_1 - 1 + data[0]]))
+        return bytes([opcodes.OP_1 - 1 + data[0]]).hex()
     elif data_len == 1 and data[0] == 0x81:
         return opcodes.OP_1NEGATE.hex()
 
-    return _op_push(data_len) + bh2u(data)
+    return _op_push(data_len) + data.hex()
 
 
 def make_op_return(x:bytes) -> bytes:
@@ -310,17 +310,20 @@ def construct_witness(items: Sequence[Union[str, int, bytes]]) -> str:
         if type(item) is int:
             item = script_num_to_hex(item)
         elif isinstance(item, (bytes, bytearray)):
-            item = bh2u(item)
+            item = item.hex()
         else:
             assert is_hex_str(item)
         witness += witness_push(item)
     return witness
 
 
-def construct_script(items: Sequence[Union[str, int, bytes, opcodes]]) -> str:
+def construct_script(items: Sequence[Union[str, int, bytes, opcodes]], values=None) -> str:
     """Constructs bitcoin script from given items."""
     script = ''
-    for item in items:
+    values = values or {}
+    for i, item in enumerate(items):
+        if i in values:
+            item = values[i]
         if isinstance(item, opcodes):
             script += item.hex()
         elif type(item) is int:
@@ -349,8 +352,12 @@ def relayfee(network: 'Network' = None) -> int:
 
 
 # see https://github.com/bitcoin/bitcoin/blob/a62f0ed64f8bbbdfe6467ac5ce92ef5b5222d1bd/src/policy/policy.cpp#L14
-DUST_LIMIT_DEFAULT_SAT_LEGACY = 546
-DUST_LIMIT_DEFAULT_SAT_SEGWIT = 294
+# and https://github.com/lightningnetwork/lightning-rfc/blob/7e3dce42cbe4fa4592320db6a4e06c26bb99122b/03-transactions.md#dust-limits
+DUST_LIMIT_P2PKH = 546
+DUST_LIMIT_P2SH = 540
+DUST_LIMIT_UNKNOWN_SEGWIT = 354
+DUST_LIMIT_P2WSH = 330
+DUST_LIMIT_P2WPKH = 294
 
 
 def dust_threshold(network: 'Network' = None) -> int:
@@ -362,7 +369,7 @@ def dust_threshold(network: 'Network' = None) -> int:
 
 
 def hash_encode(x: bytes) -> str:
-    return bh2u(x[::-1])
+    return x[::-1].hex()
 
 
 def hash_decode(x: str) -> bytes:
@@ -394,7 +401,6 @@ def hash160_to_p2sh(h160: bytes, *, net=None) -> str:
     return hash160_to_b58_address(h160, net.ADDRTYPE_P2SH)
 
 def public_key_to_p2pkh(public_key: bytes, *, net=None) -> str:
-    if net is None: net = constants.net
     return hash160_to_p2pkh(hash_160(public_key), net=net)
 
 def hash_to_segwit_addr(h: bytes, witver: int, *, net=None) -> str:
@@ -404,11 +410,9 @@ def hash_to_segwit_addr(h: bytes, witver: int, *, net=None) -> str:
     return addr
 
 def public_key_to_p2wpkh(public_key: bytes, *, net=None) -> str:
-    if net is None: net = constants.net
     return hash_to_segwit_addr(hash_160(public_key), witver=0, net=net)
 
 def script_to_p2wsh(script: str, *, net=None) -> str:
-    if net is None: net = constants.net
     return hash_to_segwit_addr(sha256(bfh(script)), witver=0, net=net)
 
 def p2wpkh_nested_script(pubkey: str) -> str:
@@ -420,21 +424,13 @@ def p2wsh_nested_script(witness_script: str) -> str:
     return construct_script([0, wsh])
 
 def pubkey_to_address(txin_type: str, pubkey: str, *, net=None) -> str:
-    if net is None: net = constants.net
-    if txin_type == 'p2pkh':
-        return public_key_to_p2pkh(bfh(pubkey), net=net)
-    elif txin_type == 'p2wpkh':
-        return public_key_to_p2wpkh(bfh(pubkey), net=net)
-    elif txin_type == 'p2wpkh-p2sh':
-        scriptSig = p2wpkh_nested_script(pubkey)
-        return hash160_to_p2sh(hash_160(bfh(scriptSig)), net=net)
-    else:
-        raise NotImplementedError(txin_type)
+    from . import descriptor
+    desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey, script_type=txin_type)
+    return desc.expand().address(net=net)
 
 
 # TODO this method is confusingly named
 def redeem_script_to_address(txin_type: str, scriptcode: str, *, net=None) -> str:
-    if net is None: net = constants.net
     if txin_type == 'p2sh':
         # given scriptcode is a redeem_script
         return hash160_to_p2sh(hash_160(bfh(scriptcode)), net=net)
@@ -449,7 +445,7 @@ def redeem_script_to_address(txin_type: str, scriptcode: str, *, net=None) -> st
         raise NotImplementedError(txin_type)
 
 
-def script_to_address(script: str, *, net=None) -> str:
+def script_to_address(script: str, *, net=None) -> Optional[str]:
     from .transaction import get_address_from_output_script
     return get_address_from_output_script(bfh(script), net=net)
 
@@ -457,19 +453,19 @@ def script_to_address(script: str, *, net=None) -> str:
 def address_to_script(addr: str, *, net=None) -> str:
     if net is None: net = constants.net
     if not is_address(addr, net=net):
-        raise BitnetIOException(f"invalid bitcoin address: {addr}")
+        raise Bitnet_IOException(f"invalid bitcoin address: {addr}")
     witver, witprog = segwit_addr.decode_segwit_address(net.SEGWIT_HRP, addr)
     if witprog is not None:
         if not (0 <= witver <= 16):
-            raise BitnetIOException(f'impossible witness version: {witver}')
+            raise Bitnet_IOException(f'impossible witness version: {witver}')
         return construct_script([witver, bytes(witprog)])
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
-        script = pubkeyhash_to_p2pkh_script(bh2u(hash_160_))
+        script = pubkeyhash_to_p2pkh_script(hash_160_.hex())
     elif addrtype == net.ADDRTYPE_P2SH:
         script = construct_script([opcodes.OP_HASH160, hash_160_, opcodes.OP_EQUAL])
     else:
-        raise BitnetIOException(f'unknown address type: {addrtype}')
+        raise Bitnet_IOException(f'unknown address type: {addrtype}')
     return script
 
 
@@ -481,29 +477,36 @@ class OnchainOutputType(Enum):
     P2SH = enum.auto()
     WITVER0_P2WPKH = enum.auto()
     WITVER0_P2WSH = enum.auto()
+    WITVER1_P2TR = enum.auto()
 
 
-def address_to_hash(addr: str, *, net=None) -> Tuple[OnchainOutputType, bytes]:
+def address_to_payload(addr: str, *, net=None) -> Tuple[OnchainOutputType, bytes]:
     """Return (type, pubkey hash / witness program) for an address."""
     if net is None: net = constants.net
     if not is_address(addr, net=net):
-        raise BitnetIOException(f"invalid bitcoin address: {addr}")
+        raise Bitnet_IOException(f"invalid bitcoin address: {addr}")
     witver, witprog = segwit_addr.decode_segwit_address(net.SEGWIT_HRP, addr)
     if witprog is not None:
-        if witver != 0:
-            raise BitnetIOException(f"not implemented handling for witver={witver}")
-        if len(witprog) == 20:
-            return OnchainOutputType.WITVER0_P2WPKH, bytes(witprog)
-        elif len(witprog) == 32:
-            return OnchainOutputType.WITVER0_P2WSH, bytes(witprog)
+        if witver == 0:
+            if len(witprog) == 20:
+                return OnchainOutputType.WITVER0_P2WPKH, bytes(witprog)
+            elif len(witprog) == 32:
+                return OnchainOutputType.WITVER0_P2WSH, bytes(witprog)
+            else:
+                raise Bitnet_IOException(f"unexpected length for segwit witver=0 witprog: len={len(witprog)}")
+        elif witver == 1:
+            if len(witprog) == 32:
+                return OnchainOutputType.WITVER1_P2TR, bytes(witprog)
+            else:
+                raise Bitnet_IOException(f"unexpected length for segwit witver=1 witprog: len={len(witprog)}")
         else:
-            raise BitnetIOException(f"unexpected length for segwit witver=0 witprog: len={len(witprog)}")
+            raise Bitnet_IOException(f"not implemented handling for witver={witver}")
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
         return OnchainOutputType.P2PKH, hash_160_
     elif addrtype == net.ADDRTYPE_P2SH:
         return OnchainOutputType.P2SH, hash_160_
-    raise BitnetIOException(f"unknown address type: {addrtype}")
+    raise Bitnet_IOException(f"unknown address type: {addrtype}")
 
 
 def address_to_scripthash(addr: str, *, net=None) -> str:
@@ -513,7 +516,7 @@ def address_to_scripthash(addr: str, *, net=None) -> str:
 
 def script_to_scripthash(script: str) -> str:
     h = sha256(bfh(script))[0:32]
-    return bh2u(bytes(reversed(h)))
+    return h[::-1].hex()
 
 def public_key_to_p2pk_script(pubkey: str) -> str:
     return construct_script([pubkey, opcodes.OP_CHECKSIG])
@@ -530,12 +533,14 @@ def pubkeyhash_to_p2pkh_script(pubkey_hash160: str) -> str:
 
 __b58chars = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 assert len(__b58chars) == 58
+__b58chars_inv = inv_dict(dict(enumerate(__b58chars)))
 
 __b43chars = b'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*+-./:'
 assert len(__b43chars) == 43
+__b43chars_inv = inv_dict(dict(enumerate(__b43chars)))
 
 
-class BaseDecodeError(BitnetIOException): pass
+class BaseDecodeError(Bitnet_IOException): pass
 
 
 def base_encode(v: bytes, *, base: int) -> str:
@@ -546,66 +551,48 @@ def base_encode(v: bytes, *, base: int) -> str:
     chars = __b58chars
     if base == 43:
         chars = __b43chars
-    long_value = 0
-    power_of_base = 1
-    for c in v[::-1]:
-        # naive but slow variant:   long_value += (256**i) * c
-        long_value += power_of_base * c
-        power_of_base <<= 8
-    result = bytearray()
-    while long_value >= base:
-        div, mod = divmod(long_value, base)
-        result.append(chars[mod])
-        long_value = div
-    result.append(chars[long_value])
-    # BitnetIO does a little leading-zero-compression:
-    # leading 0-bytes in the input become leading-1s
-    nPad = 0
-    for c in v:
-        if c == 0x00:
-            nPad += 1
-        else:
-            break
-    result.extend([chars[0]] * nPad)
-    result.reverse()
+
+    origlen = len(v)
+    v = v.lstrip(b'\x00')
+    newlen = len(v)
+
+    num = int.from_bytes(v, byteorder='big')
+    string = b""
+    while num:
+        num, idx = divmod(num, base)
+        string = chars[idx:idx + 1] + string
+
+    result = chars[0:1] * (origlen - newlen) + string
     return result.decode('ascii')
 
 
-def base_decode(v: Union[bytes, str], *, base: int, length: int = None) -> Optional[bytes]:
-    """ decode v into a string of len bytes."""
+def base_decode(v: Union[bytes, str], *, base: int) -> Optional[bytes]:
+    """ decode v into a string of len bytes.
+
+    based on the work of David Keijser in https://github.com/keis/base58
+    """
     # assert_bytes(v)
     v = to_bytes(v, 'ascii')
     if base not in (58, 43):
         raise ValueError('not supported base: {}'.format(base))
     chars = __b58chars
+    chars_inv = __b58chars_inv
     if base == 43:
         chars = __b43chars
-    long_value = 0
-    power_of_base = 1
-    for c in v[::-1]:
-        digit = chars.find(bytes([c]))
-        if digit == -1:
-            raise BaseDecodeError('Forbidden character {} for base {}'.format(c, base))
-        # naive but slow variant:   long_value += digit * (base**i)
-        long_value += digit * power_of_base
-        power_of_base *= base
-    result = bytearray()
-    while long_value >= 256:
-        div, mod = divmod(long_value, 256)
-        result.append(mod)
-        long_value = div
-    result.append(long_value)
-    nPad = 0
-    for c in v:
-        if c == chars[0]:
-            nPad += 1
-        else:
-            break
-    result.extend(b'\x00' * nPad)
-    if length is not None and len(result) != length:
-        return None
-    result.reverse()
-    return bytes(result)
+        chars_inv = __b43chars_inv
+
+    origlen = len(v)
+    v = v.lstrip(chars[0:1])
+    newlen = len(v)
+
+    num = 0
+    try:
+        for char in v:
+            num = num * base + chars_inv[char]
+    except KeyError:
+        raise BaseDecodeError('Forbidden character {} for base {}'.format(char, base))
+
+    return num.to_bytes(origlen - newlen + (num.bit_length() + 7) // 8, 'big')
 
 
 class InvalidChecksum(BaseDecodeError):
@@ -623,7 +610,7 @@ def DecodeBase58Check(psz: Union[bytes, str]) -> bytes:
     csum_found = vchRet[-4:]
     csum_calculated = sha256d(payload)[0:4]
     if csum_calculated != csum_found:
-        raise InvalidChecksum(f'calculated {bh2u(csum_calculated)}, found {bh2u(csum_found)}')
+        raise InvalidChecksum(f'calculated {csum_calculated.hex()}, found {csum_found.hex()}')
     else:
         return payload
 
@@ -671,7 +658,7 @@ def deserialize_privkey(key: str) -> Tuple[str, bytes, bool]:
     if ':' in key:
         txin_type, key = key.split(sep=':', maxsplit=1)
         if txin_type not in WIF_SCRIPT_TYPES:
-            raise BitnetIOException('unknown script type: {}'.format(txin_type))
+            raise Bitnet_IOException('unknown script type: {}'.format(txin_type))
     try:
         vch = DecodeBase58Check(key)
     except Exception as e:
@@ -684,24 +671,24 @@ def deserialize_privkey(key: str) -> Tuple[str, bytes, bool]:
         try:
             txin_type = WIF_SCRIPT_TYPES_INV[prefix_value]
         except KeyError as e:
-            raise BitnetIOException('invalid prefix ({}) for WIF key (1)'.format(vch[0])) from None
+            raise Bitnet_IOException('invalid prefix ({}) for WIF key (1)'.format(vch[0])) from None
     else:
         # all other keys must have a fixed first byte
         if vch[0] != constants.net.WIF_PREFIX:
-            raise BitnetIOException('invalid prefix ({}) for WIF key (2)'.format(vch[0]))
+            raise Bitnet_IOException('invalid prefix ({}) for WIF key (2)'.format(vch[0]))
 
     if len(vch) not in [33, 34]:
-        raise BitnetIOException('invalid vch len for WIF key: {}'.format(len(vch)))
+        raise Bitnet_IOException('invalid vch len for WIF key: {}'.format(len(vch)))
     compressed = False
     if len(vch) == 34:
         if vch[33] == 0x01:
             compressed = True
         else:
-            raise BitnetIOException(f'invalid WIF key. length suggests compressed pubkey, '
+            raise Bitnet_IOException(f'invalid WIF key. length suggests compressed pubkey, '
                                    f'but last byte is {vch[33]} != 0x01')
 
     if is_segwit_script_type(txin_type) and not compressed:
-        raise BitnetIOException('only compressed public keys can be used in segwit scripts')
+        raise Bitnet_IOException('only compressed public keys can be used in segwit scripts')
 
     secret_bytes = vch[1:33]
     # we accept secrets outside curve range; cast into range here:
@@ -738,7 +725,6 @@ def is_b58_address(addr: str, *, net=None) -> bool:
     return True
 
 def is_address(addr: str, *, net=None) -> bool:
-    if net is None: net = constants.net
     return is_segwit_address(addr, net=net) \
            or is_b58_address(addr, net=net)
 
@@ -767,3 +753,30 @@ def is_minikey(text: str) -> bool:
 
 def minikey_to_private_key(text: str) -> bytes:
     return sha256(text)
+
+
+def _get_dummy_address(purpose: str) -> str:
+    return redeem_script_to_address('p2wsh', sha256(bytes(purpose, "utf8")).hex())
+
+_dummy_addr_funcs = set()
+class DummyAddress:
+    """dummy address for fee estimation of funding tx
+    Use e.g. as: DummyAddress.CHANNEL
+    """
+    def purpose(func):
+        _dummy_addr_funcs.add(func)
+        return classproperty(func)
+
+    @purpose
+    def CHANNEL(self) -> str:
+        return _get_dummy_address("channel")
+    @purpose
+    def SWAP(self) -> str:
+        return _get_dummy_address("swap")
+
+    @classmethod
+    def is_dummy_address(cls, addr: str) -> bool:
+        return addr in (f(cls) for f in _dummy_addr_funcs)
+
+
+class DummyAddressUsedInTxException(Exception): pass

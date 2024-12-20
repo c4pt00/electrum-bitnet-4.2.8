@@ -2,11 +2,14 @@ from decimal import Decimal
 import getpass
 import datetime
 import logging
+from typing import Optional
 
+from electrum.gui import BaseElectrumGui
 from electrum import util
 from electrum import WalletStorage, Wallet
+from electrum.wallet import Abstract_Wallet
 from electrum.wallet_db import WalletDB
-from electrum.util import format_satoshis
+from electrum.util import format_satoshis, EventListener, event_listener
 from electrum.bitcoin import is_address, COIN
 from electrum.transaction import PartialTxOutput
 from electrum.network import TxBroadcastError, BestEffortRequestFailed
@@ -17,20 +20,20 @@ _ = lambda x:x  # i18n
 # written by rofl0r, with some bits stolen from the text gui (ncurses)
 
 
-class ElectrumGui:
+class ElectrumGui(BaseElectrumGui, EventListener):
 
-    def __init__(self, config, daemon, plugins):
-        self.config = config
+    def __init__(self, *, config, daemon, plugins):
+        BaseElectrumGui.__init__(self, config=config, daemon=daemon, plugins=plugins)
         self.network = daemon.network
-        storage = WalletStorage(config.get_wallet_path())
-        if not storage.file_exists:
+        storage = WalletStorage(config.get_wallet_path(use_gui_last_wallet=True))
+        if not storage.file_exists():
             print("Wallet not found. try 'electrum create'")
             exit()
         if storage.is_encrypted():
             password = getpass.getpass('Password:', stream=None)
             storage.decrypt(password)
 
-        db = WalletDB(storage.read(), manual_upgrades=False)
+        db = WalletDB(storage.read(), storage=storage, manual_upgrades=False)
 
         self.done = 0
         self.last_balance = ""
@@ -40,11 +43,11 @@ class ElectrumGui:
         self.str_amount = ""
         self.str_fee = ""
 
-        self.wallet = Wallet(db, storage, config=config)
+        self.wallet = Wallet(db, config=config)  # type: Optional[Abstract_Wallet]
         self.wallet.start_network(self.network)
         self.contacts = self.wallet.contacts
 
-        util.register_callback(self.on_network, ['wallet_updated', 'network_updated', 'banner'])
+        self.register_callbacks()
         self.commands = [_("[h] - displays this help text"), \
                          _("[i] - display transaction history"), \
                          _("[o] - enter payment order"), \
@@ -56,11 +59,17 @@ class ElectrumGui:
                          _("[q] - quit")]
         self.num_commands = len(self.commands)
 
-    def on_network(self, event, *args):
-        if event in ['wallet_updated', 'network_updated']:
-            self.updated()
-        elif event == 'banner':
-            self.print_banner()
+    @event_listener
+    def on_event_wallet_updated(self, wallet):
+        self.updated()
+
+    @event_listener
+    def on_event_network_updated(self):
+        self.updated()
+
+    @event_listener
+    def on_event_banner(self, *args):
+        self.print_banner()
 
     def main_command(self):
         self.print_balance()
@@ -94,8 +103,8 @@ class ElectrumGui:
         format_str = "%"+"%d"%width[0]+"s"+"%"+"%d"%(width[1]+delta)+"s"+"%" \
         + "%d"%(width[2]+delta)+"s"+"%"+"%d"%(width[3]+delta)+"s"
         messages = []
-
-        for hist_item in reversed(self.wallet.get_history()):
+        domain = self.wallet.get_addresses()
+        for hist_item in reversed(self.wallet.adb.get_history(domain)):
             if hist_item.tx_mined_status.conf:
                 timestamp = hist_item.tx_mined_status.timestamp
                 try:
@@ -106,8 +115,10 @@ class ElectrumGui:
                 time_str = 'unconfirmed'
 
             label = self.wallet.get_label_for_txid(hist_item.txid)
-            messages.append(format_str % (time_str, label, format_satoshis(delta, whitespaces=True),
-                                          format_satoshis(hist_item.balance, whitespaces=True)))
+            messages.append(format_str % (
+                time_str, label,
+                format_satoshis(hist_item.delta, whitespaces=True),
+                format_satoshis(hist_item.balance, whitespaces=True)))
 
         self.print_list(messages[::-1], format_str%(_("Date"), _("Description"), _("Amount"), _("Balance")))
 
@@ -117,7 +128,7 @@ class ElectrumGui:
 
     def get_balance(self):
         if self.wallet.network.is_connected():
-            if not self.wallet.up_to_date:
+            if not self.wallet.is_up_to_date():
                 msg = _("Synchronizing...")
             else:
                 c, u, x =  self.wallet.get_balance()
@@ -129,7 +140,7 @@ class ElectrumGui:
         else:
                 msg = _("Not connected")
 
-        return(msg)
+        return msg
 
 
     def print_contacts(self):
@@ -137,7 +148,7 @@ class ElectrumGui:
         self.print_list(messages, "%19s  %25s "%("Key", "Value"))
 
     def print_addresses(self):
-        messages = map(lambda addr: "%30s    %30s       "%(addr, self.wallet.get_label(addr)), self.wallet.get_addresses())
+        messages = map(lambda addr: "%30s    %30s       "%(addr, self.wallet.get_label_for_address(addr)), self.wallet.get_addresses())
         self.print_list(messages, "%19s  %25s "%("Address", "Label"))
 
     def print_order(self):
@@ -168,11 +179,13 @@ class ElectrumGui:
 
 
     def main(self):
-        while self.done == 0: self.main_command()
+        self.daemon.start_network()
+        while self.done == 0:
+            self.main_command()
 
     def do_send(self):
         if not is_address(self.str_recipient):
-            print(_('Invalid BitnetIO address'))
+            print(_('Invalid Bitnet_IO address'))
             return
         try:
             amount = int(Decimal(self.str_amount) * COIN)
@@ -198,9 +211,11 @@ class ElectrumGui:
             if c == "n": return
 
         try:
-            tx = self.wallet.mktx(outputs=[PartialTxOutput.from_address_and_value(self.str_recipient, amount)],
-                                  password=password,
-                                  fee=fee)
+            tx = self.wallet.create_transaction(
+                outputs=[PartialTxOutput.from_address_and_value(self.str_recipient, amount)],
+                password=password,
+                fee=fee,
+            )
         except Exception as e:
             print(repr(e))
             return

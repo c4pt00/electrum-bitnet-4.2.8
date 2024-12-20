@@ -11,6 +11,9 @@ This guide explains how to build Electrum binaries for macOS systems.
 
 This needs to be done on a system running macOS or OS X.
 
+The script is only tested on Intel-based (x86_64) Macs, and the binary built
+targets `x86_64` currently.
+
 Notes about compatibility with different macOS versions:
 - In general the binary is not guaranteed to run on an older version of macOS
   than what the build machine has. This is due to bundling the compiled Python into
@@ -19,81 +22,89 @@ Notes about compatibility with different macOS versions:
   imposes a minimum supported macOS version.
 - If you want to build binaries that conform to the macOS "Gatekeeper", so as to
   minimise the warnings users get, the binaries need to be codesigned with a
-  certificate issued by Apple, and starting with macOS 10.15 the binaries also
-  need to be notarized by Apple's central server. The catch is that to be able to build
-  binaries that Apple will notarise (due to the requirements on the binaries themselves,
+  certificate issued by Apple, and starting with macOS 10.15 (targets) the binaries also
+  need to be notarized by Apple's central server. To be able to build
+  binaries that Apple will notarize (due to the requirements on the binaries themselves,
   e.g. hardened runtime) the build machine needs at least macOS 10.14.
   See [#6128](https://github.com/spesmilo/electrum/issues/6128).
+  - There are two tools that can be used to notarize a binary, both part of Xcode:
+    the old `altool` and the newer `notarytool`. `altool`
+    [was deprecated](https://developer.apple.com/news/?id=y5mjxqmn) by Apple.
+    `notarytool` requires Xcode 13+, and that in turn requires macOS 11.3+.
 
-We currently build the release binaries on macOS 10.14.6, and these seem to run on
-10.13 or newer.
-
-Before starting, you should install `brew`.
+We currently build the release binaries on macOS 11.7.10, and these seem to run on
+10.14 or newer. (note: 10.13 might also work, haven't tested)
 
 
 #### Notes about reproducibility
 
 - We recommend creating a VM with a macOS guest, e.g. using VirtualBox,
   and building there.
-- The guest should run macOS 10.14.6 (that specific version).
+- The guest should run macOS 11.7.10 (that specific version).
 - The unix username should be `vagrant`, and `electrum` should be cloned directly
   to the user's home dir: `/Users/vagrant/electrum`.
 - Builders need to use the same version of Xcode; and note that
   full Xcode and Xcode commandline tools differ!
-  You should build with Xcode 11.3.1 (full Xcode).
-  The path for Xcode should be exactly as follows:
+  We use the Xcode CLI tools as installed by brew. (version 13.2)
+
+  Sanity checks:
     ```
     $ xcode-select -p
-    /Users/vagrant/Downloads/Xcode.app/Contents/Developer
+    /Library/Developer/CommandLineTools
     $ xcrun --show-sdk-path
-    /Users/vagrant/Downloads/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    $ pkgutil --pkg-info=com.apple.pkg.CLTools_Executables
+    package-id: com.apple.pkg.CLTools_Executables
+    version: 13.2.0.0.1.1638488800
+    volume: /
+    location: /
+    install-time: XXXXXXXXXX
+    groups: com.apple.FindSystemFiles.pkg-group
+    $ gcc --version
+    Configured with: --prefix=/Library/Developer/CommandLineTools/usr --with-gxx-include-dir=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/4.2.1
+    Apple clang version 13.0.0 (clang-1300.0.29.30)
+    Target: x86_64-apple-darwin20.6.0
+    Thread model: posix
+    InstalledDir: /Library/Developer/CommandLineTools/usr/bin
     ```
-  Note: make sure neither command above refers to the Xcode command line tools!
-  If so, rename the cli tools, e.g.
-    ```
-    $ mv /Library/Developer/CommandLineTools /Library/Developer/CommandLineTools2
-    ```
-  As a sanity check, make sure `$ gcc --version` consistently refers to the full Xcode.
+- Installing extraneous brew packages can result in build differences.
+  For example, pyinstaller seems to pick up and bundle brew-installed `libffi`.
+  So having a dedicated "electrum binary builder macOS VM" is recommended.
 - Make sure that you are building from a fresh clone of electrum
   (or run e.g. `git clean -ffxd` to rm all local changes).
 
 
-#### 1. Get Xcode
+#### 1. Install brew
 
-Notarizing the application requires full Xcode
-(not just command line tools as that is missing `altool`).
+Install [`brew`](https://brew.sh/).
 
-Get it from [here](https://developer.apple.com/download/more/).
-Unfortunately, you need an "Apple ID" account.
-
-(note: the last Xcode that runs on macOS 10.14.6 is Xcode 11.3.1)
-
-After downloading, uncompress it.
-
-Make sure it is the "selected" xcode (e.g.):
-
-    sudo xcode-select -s $HOME/Downloads/Xcode.app/Contents/Developer/
+Let brew install the Xcode CLI tools.
 
 
 #### 2. Build Electrum
 
     cd electrum
-    ./contrib/osx/make_osx
+    ./contrib/osx/make_osx.sh
 
-This creates both a folder named Electrum.app and the .dmg file.
+This creates both a folder named Electrum.app and the .dmg file (both unsigned).
 
-If you want the binaries codesigned for MacOS and notarised by Apple's central server,
-provide these env vars to the `make_osx` script:
+##### 2.1. For release binaries, here be dragons
+
+If you want the binaries codesigned for macOS and notarised by Apple's central server,
+also run the `sign_osx.sh` script:
 
     CODESIGN_CERT="Developer ID Application: Electrum Technologies GmbH (L6P37P7P56)" \
+    APPLE_TEAM_ID="L6P37P7P56" \
     APPLE_ID_USER="me@email.com" \
     APPLE_ID_PASSWORD="1234" \
-    ./contrib/osx/make_osx
+    ./contrib/osx/sign_osx.sh
+
+(note: `APPLE_ID_PASSWORD` is an app-specific password, *not* the account password)
 
 
 ## Verifying reproducibility and comparing against official binary
 
-Every user can verify that the official binary was created from the source code in this 
+Every user can verify that the official binary was created from the source code in this
 repository.
 
 1. Build your own binary as described above.

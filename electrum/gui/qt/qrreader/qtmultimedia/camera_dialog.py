@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Electron Cash - lightweight BitnetIO client
+# Electron Cash - lightweight Bitnet_IO client
 # Copyright (C) 2019 Axel Gembe <derago@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person
@@ -27,16 +27,16 @@ import time
 import math
 import sys
 import os
-from typing import List
+from typing import List, Optional
 
 from PyQt5.QtMultimedia import QCameraInfo, QCamera, QCameraViewfinderSettings
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel, QWidget
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import QSize, QRect, Qt, pyqtSignal, PYQT_VERSION
 
 from electrum.simple_config import SimpleConfig
 from electrum.i18n import _
-from electrum.qrreader import get_qr_reader, QrCodeResult
+from electrum.qrreader import get_qr_reader, QrCodeResult, MissingQrDetectionLib
 from electrum.logging import Logger
 
 from electrum.gui.qt.util import MessageBoxMixin, FixedAspectRatioLayout, ImageGraphicsEffect
@@ -58,10 +58,6 @@ class NoCamerasFound(CameraError):
 class NoCameraResolutionsFound(CameraError):
     ''' Raised internally if no usable camera resolutions were found. '''
 
-class MissingQrDetectionLib(RuntimeError):
-    ''' Raised if we can't find zbar or whatever other platform lib
-    we require to detect QR in image frames. '''
-
 class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
     """
     Dialog for reading QR codes from a camera
@@ -72,7 +68,7 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
 
     qr_finished = pyqtSignal(bool, str, object)
 
-    def __init__(self, parent, *, config: SimpleConfig):
+    def __init__(self, parent: Optional[QWidget], *, config: SimpleConfig):
         ''' Note: make sure parent is a "top_level_window()" as per
         MessageBoxMixin API else bad things can happen on macOS. '''
         QDialog.__init__(self, parent=parent)
@@ -97,8 +93,6 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
 
         # Try to get the QR reader for this system
         self.qrreader = get_qr_reader()
-        if not self.qrreader:
-            raise MissingQrDetectionLib(_("The platform QR detection library is not available."))
 
         # Set up the window, add the maximize button
         flags = self.windowFlags()
@@ -136,7 +130,7 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
         # Flip horizontally checkbox with default coming from global config
         self.flip_x = QCheckBox()
         self.flip_x.setText(_("&Flip horizontally"))
-        self.flip_x.setChecked(bool(self.config.get('qrreader_flip_x', True)))
+        self.flip_x.setChecked(self.config.QR_READER_FLIP_X)
         self.flip_x.stateChanged.connect(self._on_flip_x_changed)
         controls_layout.addWidget(self.flip_x)
 
@@ -153,7 +147,7 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
         self.image_effect = ImageGraphicsEffect(self, self.crop_blur_effect)
 
 
-        # Note these should stay as queued connections becasue we use the idiom
+        # Note these should stay as queued connections because we use the idiom
         # self.reject() and self.accept() in this class to kill the scan --
         # and we do it from within callback functions. If you don't use
         # queued connections here, bad things can happen.
@@ -161,7 +155,7 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
         self.finished.connect(self._on_finished, Qt.QueuedConnection)
 
     def _on_flip_x_changed(self, _state: int):
-        self.config.set_key('qrreader_flip_x', self.flip_x.isChecked())
+        self.config.QR_READER_FLIP_X = self.flip_x.isChecked()
 
     def _get_resolution(self, resolutions: List[QSize], min_size: int) -> QSize:
         """
@@ -213,8 +207,8 @@ class QrReaderCameraDialog(Logger, MessageBoxMixin, QDialog):
         """
         Returns a QRect that is scan_size x scan_size in the middle of the resolution
         """
-        scan_pos_x = (resolution.width() - scan_size) / 2
-        scan_pos_y = (resolution.height() - scan_size) / 2
+        scan_pos_x = (resolution.width() - scan_size) // 2
+        scan_pos_y = (resolution.height() - scan_size) // 2
         return QRect(scan_pos_x, scan_pos_y, scan_size, scan_size)
 
     @staticmethod

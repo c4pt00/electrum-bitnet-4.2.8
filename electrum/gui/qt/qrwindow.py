@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2014 Thomas Voegtlin
 #
 # Permission is hereby granted, free of charge, to any person
@@ -35,11 +35,14 @@ class QR_Window(QWidget):
 
     def __init__(self, win):
         QWidget.__init__(self)
-        self.win = win
+        self.main_window = win
         self.setWindowTitle('Electrum - '+_('Payment Request'))
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(800, 800)
         self.setFocusPolicy(Qt.NoFocus)
         main_box = QHBoxLayout()
         self.qrw = QRCodeWidget()
         main_box.addWidget(self.qrw, 1)
         self.setLayout(main_box)
+
+    def closeEvent(self, event):
+        self.main_window.receive_tab.qr_menu_action.setChecked(False)

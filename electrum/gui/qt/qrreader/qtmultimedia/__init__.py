@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Electron Cash - lightweight BitnetIO client
+# Electron Cash - lightweight Bitnet_IO client
 # Copyright (C) 2019 Axel Gembe <derago@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person
@@ -26,7 +26,7 @@
 from typing import Mapping
 
 from .camera_dialog import (QrReaderCameraDialog, CameraError, NoCamerasFound,
-                            NoCameraResolutionsFound, MissingQrDetectionLib)
+                            NoCameraResolutionsFound)
 from .validator import (QrReaderValidatorResult, AbstractQrReaderValidator,
                         QrReaderValidatorCounting, QrReaderValidatorColorizing,
                         QrReaderValidatorStrong, QrReaderValidatorCounted)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2011 thomasv@gitorious
 #
 # Permission is hereby granted, free of charge, to any person
@@ -29,7 +29,6 @@ import sys
 import traceback
 import asyncio
 import socket
-import requests
 from typing import Tuple, Union, List, TYPE_CHECKING, Optional, Set, NamedTuple, Any, Sequence, Dict
 from collections import defaultdict
 from ipaddress import IPv4Network, IPv6Network, ip_address, IPv6Address, IPv4Address
@@ -39,16 +38,15 @@ import hashlib
 import functools
 
 import aiorpcx
-from aiorpcx import TaskGroup
 from aiorpcx import RPCSession, Notification, NetAddress, NewlineFramer
 from aiorpcx.curio import timeout_after, TaskTimeout
 from aiorpcx.jsonrpc import JSONRPC, CodeMessageError
 from aiorpcx.rawsocket import RSClient
 import certifi
 
-from .util import (ignore_exceptions, log_exceptions, bfh, SilentTaskGroup, MySocksProxy,
+from .util import (ignore_exceptions, log_exceptions, bfh, MySocksProxy,
                    is_integer, is_non_negative_integer, is_hash256_str, is_hex_str,
-                   is_int_or_float, is_non_negative_int_or_float)
+                   is_int_or_float, is_non_negative_int_or_float, OldTaskGroup)
 from . import util
 from . import x509
 from . import pem
@@ -69,8 +67,6 @@ if TYPE_CHECKING:
 ca_path = certifi.where()
 
 BUCKET_NAME_OF_ONION_SERVERS = 'onion'
-
-MAX_INCOMING_MSG_SIZE = 1_000_000  # in bytes
 
 _KNOWN_NETWORK_PROTOCOLS = {'t', 's'}
 PREFERRED_NETWORK_PROTOCOL = 's'
@@ -107,8 +103,7 @@ def assert_int_or_float(val: Any) -> None:
 
 def assert_non_negative_int_or_float(val: Any) -> None:
     if not is_non_negative_int_or_float(val):
-        raise RequestCorrupted(
-            f'{val!r} should be a non-negative int or float')
+        raise RequestCorrupted(f'{val!r} should be a non-negative int or float')
 
 
 def assert_hash256_str(val: Any) -> None:
@@ -125,8 +120,7 @@ def assert_dict_contains_field(d: Any, *, field_name: str) -> Any:
     if not isinstance(d, dict):
         raise RequestCorrupted(f'{d!r} should be a dict')
     if field_name not in d:
-        raise RequestCorrupted(
-            f'required field {field_name!r} missing from dict')
+        raise RequestCorrupted(f'required field {field_name!r} missing from dict')
     return d[field_name]
 
 
@@ -151,8 +145,7 @@ class NotificationSession(RPCSession):
         try:
             if isinstance(request, Notification):
                 params, result = request.args[:-1], request.args[-1]
-                key = self.get_hashable_key_for_rpc_call(
-                    request.method, params)
+                key = self.get_hashable_key_for_rpc_call(request.method, params)
                 if key in self.subscriptions:
                     self.cache[key] = result
                     for queue in self.subscriptions[key]:
@@ -173,13 +166,16 @@ class NotificationSession(RPCSession):
         try:
             # note: RPCSession.send_request raises TaskTimeout in case of a timeout.
             # TaskTimeout is a subclass of CancelledError, which is *suppressed* in TaskGroups
-            response = await asyncio.wait_for(
+            response = await util.wait_for2(
                 super().send_request(*args, **kwargs),
                 timeout)
         except (TaskTimeout, asyncio.TimeoutError) as e:
+            self.maybe_log(f"--> request timed out: {args} (id: {msg_id})")
             raise RequestTimedOut(f'request timed out: {args} (id: {msg_id})') from e
-
         except CodeMessageError as e:
+            self.maybe_log(f"--> {repr(e)} (id: {msg_id})")
+            raise
+        except BaseException as e:  # cancellations, etc. are useful for debugging
             self.maybe_log(f"--> {repr(e)} (id: {msg_id})")
             raise
         else:
@@ -216,20 +212,31 @@ class NotificationSession(RPCSession):
         return str(method) + repr(params)
 
     def maybe_log(self, msg: str) -> None:
-        if not self.interface:
-            return
+        if not self.interface: return
         if self.interface.debug or self.interface.network.debug:
             self.interface.logger.debug(msg)
 
     def default_framer(self):
         # overridden so that max_size can be customized
-        max_size = int(self.interface.network.config.get('network_max_incoming_msg_size',
-                                                         MAX_INCOMING_MSG_SIZE))
+        max_size = self.interface.network.config.NETWORK_MAX_INCOMING_MSG_SIZE
+        assert max_size > 500_000, f"{max_size=} (< 500_000) is too small"
         return NewlineFramer(max_size=max_size)
 
+    async def close(self, *, force_after: int = None):
+        """Closes the connection and waits for it to be closed.
+        We try to flush buffered data to the wire, which can take some time.
+        """
+        if force_after is None:
+            # We give up after a while and just abort the connection.
+            # Note: specifically if the server is running Fulcrum, waiting seems hopeless,
+            #       the connection must be aborted (see https://github.com/cculianu/Fulcrum/issues/76)
+            # Note: if the ethernet cable was pulled or wifi disconnected, that too might
+            #       wait until this timeout is triggered
+            force_after = 1  # seconds
+        await super().close(force_after=force_after)
 
-class NetworkException(Exception):
-    pass
+
+class NetworkException(Exception): pass
 
 
 class GracefulDisconnect(NetworkException):
@@ -246,28 +253,13 @@ class RequestTimedOut(GracefulDisconnect):
         return _("Network request timed out.")
 
 
-class RequestCorrupted(Exception):
-    pass
+class RequestCorrupted(Exception): pass
 
-
-class ErrorParsingSSLCert(Exception):
-    pass
-
-
-class ErrorGettingSSLCertFromServer(Exception):
-    pass
-
-
-class ErrorSSLCertFingerprintMismatch(Exception):
-    pass
-
-
-class InvalidOptionCombination(Exception):
-    pass
-
-
-class ConnectError(NetworkException):
-    pass
+class ErrorParsingSSLCert(Exception): pass
+class ErrorGettingSSLCertFromServer(Exception): pass
+class ErrorSSLCertFingerprintMismatch(Exception): pass
+class InvalidOptionCombination(Exception): pass
+class ConnectError(NetworkException): pass
 
 
 class _RSClient(RSClient):
@@ -293,7 +285,6 @@ class ServerAddr:
             net_addr = NetAddress(host, port)  # this validates host and port
         except Exception as e:
             raise ValueError(f"cannot construct ServerAddr: invalid host or port (host={host}, port={port})") from e
-
         if protocol not in _KNOWN_NETWORK_PROTOCOLS:
             raise ValueError(f"invalid network protocol: {protocol}")
         self.host = str(net_addr.host)  # canonical form (if e.g. IPv6 address)
@@ -303,6 +294,7 @@ class ServerAddr:
 
     @classmethod
     def from_str(cls, s: str) -> 'ServerAddr':
+        """Constructs a ServerAddr or raises ValueError."""
         # host might be IPv6 address, hence do rsplit:
         host, port, protocol = str(s).rsplit(':', 2)
         return ServerAddr(host=host, port=port, protocol=protocol)
@@ -310,20 +302,29 @@ class ServerAddr:
     @classmethod
     def from_str_with_inference(cls, s: str) -> Optional['ServerAddr']:
         """Construct ServerAddr from str, guessing missing details.
+        Does not raise - just returns None if guessing failed.
         Ongoing compatibility not guaranteed.
         """
         if not s:
             return None
+        host = ""
+        if s[0] == "[" and "]" in s:  # IPv6 address
+            host_end = s.index("]")
+            host = s[1:host_end]
+            s = s[host_end+1:]
         items = str(s).rsplit(':', 2)
         if len(items) < 2:
             return None  # although maybe we could guess the port too?
-        host = items[0]
+        host = host or items[0]
         port = items[1]
         if len(items) >= 3:
             protocol = items[2]
         else:
             protocol = PREFERRED_NETWORK_PROTOCOL
-        return ServerAddr(host=host, port=port, protocol=protocol)
+        try:
+            return ServerAddr(host=host, port=port, protocol=protocol)
+        except ValueError:
+            return None
 
     def to_friendly_name(self) -> str:
         # note: this method is closely linked to from_str_with_inference
@@ -374,19 +375,26 @@ class Interface(Logger):
     LOGGING_SHORTCUT = 'i'
 
     def __init__(self, *, network: 'Network', server: ServerAddr, proxy: Optional[dict]):
-        self.ready = asyncio.Future()
+        self.ready = network.asyncio_loop.create_future()
         self.got_disconnected = asyncio.Event()
         self.server = server
         Logger.__init__(self)
         assert network.config.path
-        self.cert_path = _get_cert_path_for_host(
-            config=network.config, host=self.host)
+        self.cert_path = _get_cert_path_for_host(config=network.config, host=self.host)
         self.blockchain = None  # type: Optional[Blockchain]
         self._requested_chunks = set()  # type: Set[int]
         self.network = network
-        self.proxy = MySocksProxy.from_proxy_dict(proxy)
         self.session = None  # type: Optional[NotificationSession]
         self._ipaddr_bucket = None
+        # Set up proxy.
+        # - for servers running on localhost, the proxy is not used. If user runs their own server
+        #   on same machine, this lets them enable the proxy (which is used for e.g. FX rates).
+        #   note: we could maybe relax this further and bypass the proxy for all private
+        #         addresses...? e.g. 192.168.x.x
+        if util.is_localhost(server.host):
+            self.logger.info(f"looks like localhost: not using proxy for this server")
+            proxy = None
+        self.proxy = MySocksProxy.from_proxy_dict(proxy)
 
         # Latest block header and corresponding height, as claimed by the server.
         # Note that these values are updated before they are verified.
@@ -400,14 +408,12 @@ class Interface(Logger):
         # Dump network messages (only for this interface).  Set at runtime from the console.
         self.debug = False
 
-        self.taskgroup = SilentTaskGroup()
+        self.taskgroup = OldTaskGroup()
 
         async def spawn_task():
             task = await self.network.taskgroup.spawn(self.run())
-            if sys.version_info >= (3, 8):
-                task.set_name(f"interface::{str(server)}")
-        asyncio.run_coroutine_threadsafe(
-            spawn_task(), self.network.asyncio_loop)
+            task.set_name(f"interface::{str(server)}")
+        asyncio.run_coroutine_threadsafe(spawn_task(), self.network.asyncio_loop)
 
     @property
     def host(self):
@@ -436,18 +442,21 @@ class Interface(Logger):
             await self.open_session(ca_ssl_context, exit_early=True)
         except ConnectError as e:
             cause = e.__cause__
-            if isinstance(cause, ssl.SSLError) and cause.reason == 'CERTIFICATE_VERIFY_FAILED':
-                # failures due to self-signed certs are normal
+            if (isinstance(cause, ssl.SSLCertVerificationError)
+                    and cause.reason == 'CERTIFICATE_VERIFY_FAILED'
+                    and cause.verify_code == 18):  # "self signed certificate"
+                # Good. We will use this server as self-signed.
                 return False
+            # Not good. Cannot use this server.
             raise
+        # Good. We will use this server as CA-signed.
         return True
 
     async def _try_saving_ssl_cert_for_first_time(self, ca_ssl_context):
         ca_signed = await self.is_server_ca_signed(ca_ssl_context)
         if ca_signed:
             if self._get_expected_fingerprint():
-                raise InvalidOptionCombination(
-                    "cannot use --serverfingerprint with CA signed servers")
+                raise InvalidOptionCombination("cannot use --serverfingerprint with CA signed servers")
             with open(self.cert_path, 'w') as f:
                 # empty file means this is CA signed, not self-signed
                 f.write('')
@@ -461,8 +470,7 @@ class Interface(Logger):
             contents = f.read()
         if contents == '':  # CA signed
             if self._get_expected_fingerprint():
-                raise InvalidOptionCombination(
-                    "cannot use --serverfingerprint with CA signed servers")
+                raise InvalidOptionCombination("cannot use --serverfingerprint with CA signed servers")
             return True
         # pinned self-signed cert
         try:
@@ -490,8 +498,7 @@ class Interface(Logger):
             return None
 
         # see if we already have cert for this server; or get it for the first time
-        ca_sslc = ssl.create_default_context(
-            purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
+        ca_sslc = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_path)
         if not self._is_saved_ssl_cert_available():
             try:
                 await self._try_saving_ssl_cert_for_first_time(ca_sslc)
@@ -504,9 +511,11 @@ class Interface(Logger):
             sslc = ca_sslc
         else:
             # pinned self-signed cert
-            sslc = ssl.create_default_context(
-                ssl.Purpose.SERVER_AUTH, cafile=self.cert_path)
-            sslc.check_hostname = 0
+            sslc = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=self.cert_path)
+            # note: Flag "ssl.VERIFY_X509_STRICT" is enabled by default in python 3.13+ (disabled in older versions).
+            #       We explicitly disable it as it breaks lots of servers.
+            sslc.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            sslc.check_hostname = False
         return sslc
 
     def handle_disconnect(func):
@@ -519,7 +528,6 @@ class Interface(Logger):
             except aiorpcx.jsonrpc.RPCError as e:
                 self.logger.warning(f"disconnecting due to {repr(e)}")
                 self.logger.debug(f"(disconnect) trace for {repr(e)}", exc_info=True)
-
             finally:
                 self.got_disconnected.set()
                 await self.network.connection_down(self)
@@ -550,8 +558,7 @@ class Interface(Logger):
 
     def _mark_ready(self) -> None:
         if self.ready.cancelled():
-            raise GracefulDisconnect(
-                'conn establishment was too slow; *ready* future was cancelled')
+            raise GracefulDisconnect('conn establishment was too slow; *ready* future was cancelled')
         if self.ready.done():
             return
 
@@ -565,8 +572,10 @@ class Interface(Logger):
 
         self.logger.info(f"set blockchain with height {self.blockchain.height()}")
 
-
         self.ready.set_result(1)
+
+    def is_connected_and_ready(self) -> bool:
+        return self.ready.done() and not self.got_disconnected.is_set()
 
     async def _save_certificate(self) -> None:
         if not os.path.exists(self.cert_path):
@@ -579,10 +588,9 @@ class Interface(Logger):
                     with open(self.cert_path, 'w') as f:
                         cert = ssl.DER_cert_to_PEM_cert(dercert)
                         # workaround android bug
-                        cert = re.sub(
-                            "([^\n])-----END CERTIFICATE-----", "\\1\n-----END CERTIFICATE-----", cert)
+                        cert = re.sub("([^\n])-----END CERTIFICATE-----","\\1\n-----END CERTIFICATE-----",cert)
                         f.write(cert)
-                        # even though close flushes we can't fsync when closed.
+                        # even though close flushes, we can't fsync when closed.
                         # and we must flush before fsyncing, cause flush flushes to OS buffer
                         # fsync writes to OS buffer to disk
                         f.flush()
@@ -590,23 +598,22 @@ class Interface(Logger):
                     break
                 await asyncio.sleep(1)
             else:
-                raise GracefulDisconnect(
-                    "could not get certificate after 10 tries")
+                raise GracefulDisconnect("could not get certificate after 10 tries")
 
     async def _fetch_certificate(self) -> bytes:
-        sslc = ssl.SSLContext()
+        sslc = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+        sslc.check_hostname = False
+        sslc.verify_mode = ssl.CERT_NONE
         async with _RSClient(session_factory=RPCSession,
                              host=self.host, port=self.port,
                              ssl=sslc, proxy=self.proxy) as session:
-            # type: asyncio.BaseTransport
-            asyncio_transport = session.transport._asyncio_transport
-            ssl_object = asyncio_transport.get_extra_info(
-                "ssl_object")  # type: ssl.SSLObject
+            asyncio_transport = session.transport._asyncio_transport  # type: asyncio.BaseTransport
+            ssl_object = asyncio_transport.get_extra_info("ssl_object")  # type: ssl.SSLObject
             return ssl_object.getpeercert(binary_form=True)
 
     def _get_expected_fingerprint(self) -> Optional[str]:
         if self.is_main_server():
-            return self.network.config.get("serverfingerprint")
+            return self.network.config.NETWORK_SERVERFINGERPRINT
 
     def _verify_certificate_fingerprint(self, certificate):
         expected_fingerprint = self._get_expected_fingerprint()
@@ -616,16 +623,15 @@ class Interface(Logger):
         fingerprints_match = fingerprint.lower() == expected_fingerprint.lower()
         if not fingerprints_match:
             util.trigger_callback('cert_mismatch')
-            raise ErrorSSLCertFingerprintMismatch(
-                'Refusing to connect to server due to cert fingerprint mismatch')
+            raise ErrorSSLCertFingerprintMismatch('Refusing to connect to server due to cert fingerprint mismatch')
         self.logger.info("cert fingerprint verification passed")
 
     async def get_block_header(self, height, assert_mode):
+        if not is_non_negative_integer(height):
+            raise Exception(f"{repr(height)} is not a block height")
         self.logger.info(f'requesting block header {height} in mode {assert_mode}')
-
         # use lower timeout as we usually have network.bhi_lock here
-        timeout = self.network.get_network_timeout_seconds(
-            NetworkTimeout.Urgent)
+        timeout = self.network.get_network_timeout_seconds(NetworkTimeout.Urgent)
         res = await self.session.send_request('blockchain.block.header', [height], timeout=timeout)
         return blockchain.deserialize_header(bytes.fromhex(res), height)
 
@@ -657,8 +663,7 @@ class Interface(Logger):
         if res['max'] < 2016:
             raise RequestCorrupted(f"server uses too low 'max' count for block.headers: {res['max']} < 2016")
         if res['count'] != size:
-            raise RequestCorrupted(
-                f"expected {size} headers but only got {res['count']}")
+            raise RequestCorrupted(f"expected {size} headers but only got {res['count']}")
         conn = self.blockchain.connect_chunk(index, res['hex'])
         if not conn:
             return conn, 0
@@ -669,19 +674,16 @@ class Interface(Logger):
                 self.network.interface is None and self.network.default_server == self.server)
 
     async def open_session(self, sslc, exit_early=False):
-        session_factory = lambda *args, iface=self, **kwargs: NotificationSession(
-            *args, **kwargs, interface=iface)
+        session_factory = lambda *args, iface=self, **kwargs: NotificationSession(*args, **kwargs, interface=iface)
         async with _RSClient(session_factory=session_factory,
                              host=self.host, port=self.port,
                              ssl=sslc, proxy=self.proxy) as session:
             self.session = session  # type: NotificationSession
-            self.session.set_default_timeout(
-                self.network.get_network_timeout_seconds(NetworkTimeout.Generic))
+            self.session.set_default_timeout(self.network.get_network_timeout_seconds(NetworkTimeout.Generic))
             try:
                 ver = await session.send_request('server.version', [self.client_name(), version.PROTOCOL_VERSION])
             except aiorpcx.jsonrpc.RPCError as e:
-                # probably 'unsupported protocol version'
-                raise GracefulDisconnect(e)
+                raise GracefulDisconnect(e)  # probably 'unsupported protocol version'
             if exit_early:
                 return
             if ver[1] != version.PROTOCOL_VERSION:
@@ -699,16 +701,30 @@ class Interface(Logger):
                     await group.spawn(self.run_fetch_blocks)
                     await group.spawn(self.monitor_connection)
             except aiorpcx.jsonrpc.RPCError as e:
-                if e.code in (JSONRPC.EXCESSIVE_RESOURCE_USAGE,
-                              JSONRPC.SERVER_BUSY,
-                              JSONRPC.METHOD_NOT_FOUND):
-                    raise GracefulDisconnect(
-                        e, log_level=logging.WARNING) from e
+                if e.code in (
+                    JSONRPC.EXCESSIVE_RESOURCE_USAGE,
+                    JSONRPC.SERVER_BUSY,
+                    JSONRPC.METHOD_NOT_FOUND,
+                    JSONRPC.INTERNAL_ERROR,
+                ):
+                    log_level = logging.WARNING if self.is_main_server() else logging.INFO
+                    raise GracefulDisconnect(e, log_level=log_level) from e
                 raise
+            finally:
+                self.got_disconnected.set()  # set this ASAP, ideally before any awaits
 
     async def monitor_connection(self):
         while True:
             await asyncio.sleep(1)
+            # If the session/transport is no longer open, we disconnect.
+            # e.g. if the remote cleanly sends EOF, we would handle that here.
+            # note: If the user pulls the ethernet cable or disconnects wifi,
+            #       ideally we would detect that here, so that the GUI/etc can reflect that.
+            #       - On Android, this seems to work reliably , where asyncio.BaseProtocol.connection_lost()
+            #         gets called with e.g. ConnectionAbortedError(103, 'Software caused connection abort').
+            #       - On desktop Linux/Win, it seems BaseProtocol.connection_lost() is not called in such cases.
+            #         Hence, in practice the connection issue will only be detected the next time we try
+            #         to send a message (plus timeout), which can take minutes...
             if not self.session or self.session.is_closing():
                 raise GracefulDisconnect('session was closed')
 
@@ -720,14 +736,13 @@ class Interface(Logger):
     async def request_fee_estimates(self):
         from .simple_config import FEE_ETA_TARGETS
         while True:
-            async with TaskGroup() as group:
+            async with OldTaskGroup() as group:
                 fee_tasks = []
                 for i in FEE_ETA_TARGETS:
                     fee_tasks.append((i, await group.spawn(self.get_estimatefee(i))))
             for nblock_target, task in fee_tasks:
                 fee = task.result()
-                if fee < 0:
-                    continue
+                if fee < 0: continue
                 assert isinstance(fee, int)
                 self.fee_estimates_eta[nblock_target] = fee
             self.network.update_fee_estimates()
@@ -735,13 +750,8 @@ class Interface(Logger):
 
     async def close(self, *, force_after: int = None):
         """Closes the connection and waits for it to be closed.
-        We try to flush buffered data to the wire, so this can take some time.
+        We try to flush buffered data to the wire, which can take some time.
         """
-        if force_after is None:
-            # We give up after a while and just abort the connection.
-            # Note: specifically if the server is running Fulcrum, waiting seems hopeless,
-            #       the connection must be aborted (see https://github.com/cculianu/Fulcrum/issues/76)
-            force_after = 1  # seconds
         if self.session:
             await self.session.close(force_after=force_after)
         # monitor_connection will cancel tasks
@@ -753,37 +763,36 @@ class Interface(Logger):
             item = await header_queue.get()
             raw_header = item[0]
             height = raw_header['height']
-            header = blockchain.deserialize_header(
-                bfh(raw_header['hex']), height)
+            header = blockchain.deserialize_header(bfh(raw_header['hex']), height)
             self.tip_header = header
             self.tip = height
             if self.tip < constants.net.max_checkpoint():
                 raise GracefulDisconnect('server tip below max checkpoint')
             self._mark_ready()
-           # await self._process_header_at_tip()
+            blockchain_updated = await self._process_header_at_tip()
             # header processing done
-            util.trigger_callback('blockchain_updated')
+            if blockchain_updated:
+                util.trigger_callback('blockchain_updated')
             util.trigger_callback('network_updated')
             await self.network.switch_unwanted_fork_interface()
             await self.network.switch_lagging_interface()
-            # new json connect for topology mapping
-            url = 'https://bitnet-io.org/connect.json'
-            data = requests.get(url).json
 
-           
-  
-
-    async def _process_header_at_tip(self):
+    async def _process_header_at_tip(self) -> bool:
+        """Returns:
+        False - boring fast-forward: we already have this header as part of this blockchain from another interface,
+        True - new header we didn't have, or reorg
+        """
         height, header = self.tip, self.tip_header
         async with self.network.bhi_lock:
             if self.blockchain.height() >= height and self.blockchain.check_header(header):
                 # another interface amended the blockchain
                 self.logger.info(f"skipping header {height}")
-                return
-#            _, height = await self.step(height, header)
+                return False
+            _, height = await self.step(height, header)
             # in the simple case, height == self.tip+1
             if height <= self.tip:
                 await self.sync_until(height)
+            return True
 
     async def sync_until(self, height, next_height=None):
         if next_height is None:
@@ -795,18 +804,17 @@ class Interface(Logger):
                 could_connect, num_headers = await self.request_chunk(height, next_height)
                 if not could_connect:
                     if height <= constants.net.max_checkpoint():
-                        raise GracefulDisconnect(
-                            'server chain conflicts with checkpoints or genesis')
+                        raise GracefulDisconnect('server chain conflicts with checkpoints or genesis')
                     last, height = await self.step(height)
                     continue
+                util.trigger_callback('blockchain_updated')
                 util.trigger_callback('network_updated')
                 height = (height // 2016 * 2016) + num_headers
                 assert height <= next_height+1, (height, self.tip)
                 last = 'catchup'
             else:
                 last, height = await self.step(height)
-            assert (prev_last, prev_height) != (
-                last, height), 'had to prevent infinite loop in interface.sync_until'
+            assert (prev_last, prev_height) != (last, height), 'had to prevent infinite loop in interface.sync_until'
         return last, height
 
     async def step(self, height, header=None):
@@ -814,26 +822,21 @@ class Interface(Logger):
         if header is None:
             header = await self.get_block_header(height, 'catchup')
 
-        chain = blockchain.check_header(
-            header) if 'mock' not in header else header['mock']['check'](header)
+        chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
         if chain:
-            self.blockchain = chain if isinstance(
-                chain, Blockchain) else self.blockchain
+            self.blockchain = chain if isinstance(chain, Blockchain) else self.blockchain
             # note: there is an edge case here that is not handled.
             # we might know the blockhash (enough for check_header) but
             # not have the header itself. e.g. regtest chain with only genesis.
             # this situation resolves itself on the next block
             return 'catchup', height+1
 
-        can_connect = blockchain.can_connect(
-            header) if 'mock' not in header else header['mock']['connect'](height)
+        can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
         if not can_connect:
             self.logger.info(f"can't connect {height}")
             height, header, bad, bad_header = await self._search_headers_backwards(height, header)
-            chain = blockchain.check_header(
-                header) if 'mock' not in header else header['mock']['check'](header)
-            can_connect = blockchain.can_connect(
-                header) if 'mock' not in header else header['mock']['connect'](height)
+            chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
+            can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
             assert chain or can_connect
         if can_connect:
             self.logger.info(f"could connect {height}")
@@ -843,27 +846,23 @@ class Interface(Logger):
                 self.blockchain.save_header(header)
             return 'catchup', height
 
-#        good, bad, bad_header = await self._search_headers_binary(height, bad, bad_header, chain)
+        good, bad, bad_header = await self._search_headers_binary(height, bad, bad_header, chain)
         return await self._resolve_potential_chain_fork_given_forkpoint(good, bad, bad_header)
 
     async def _search_headers_binary(self, height, bad, bad_header, chain):
         assert bad == bad_header['block_height']
         _assert_header_does_not_check_against_any_chain(bad_header)
 
-        self.blockchain = chain if isinstance(
-            chain, Blockchain) else self.blockchain
+        self.blockchain = chain if isinstance(chain, Blockchain) else self.blockchain
         good = height
         while True:
             assert good < bad, (good, bad)
             height = (good + bad) // 2
             self.logger.info(f"binary step. good {good}, bad {bad}, height {height}")
-
             header = await self.get_block_header(height, 'binary')
-            chain = blockchain.check_header(
-                header) if 'mock' not in header else header['mock']['check'](header)
+            chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
             if chain:
-                self.blockchain = chain if isinstance(
-                    chain, Blockchain) else self.blockchain
+                self.blockchain = chain if isinstance(chain, Blockchain) else self.blockchain
                 good = height
             else:
                 bad = height
@@ -872,14 +871,13 @@ class Interface(Logger):
                 break
 
         mock = 'mock' in bad_header and bad_header['mock']['connect'](height)
-        real = not mock and self.blockchain.can_connect(
-            bad_header, check_height=False)
-    #    if not real and not mock:
-        #    raise Exception('unexpected bad header during binary: {}'.format(bad_header))
-     #   _assert_header_does_not_check_against_any_chain(bad_header)
+        real = not mock and self.blockchain.can_connect(bad_header, check_height=False)
+#        if not real and not mock:
+#            raise Exception('unexpected bad header during binary: {}'.format(bad_header))
+#        _assert_header_does_not_check_against_any_chain(bad_header)
 
-#        self.logger.info(f"binary search exited. good {good}, bad {bad}")3
-#        return good, bad, bad_header
+        self.logger.info(f"binary search exited. good {good}, bad {bad}")
+        return good, bad, bad_header
 
     async def _resolve_potential_chain_fork_given_forkpoint(self, good, bad, bad_header):
         assert good + 1 == bad
@@ -898,8 +896,7 @@ class Interface(Logger):
         # this is a new fork we don't yet have
         height = bad + 1
         self.logger.info(f"new fork at bad height {bad}")
-        forkfun = self.blockchain.fork if 'mock' not in bad_header else bad_header[
-            'mock']['fork']
+        forkfun = self.blockchain.fork if 'mock' not in bad_header else bad_header['mock']['fork']
         b = forkfun(bad_header)  # type: Blockchain
         self.blockchain = b
         assert b.forkpoint == bad
@@ -913,23 +910,18 @@ class Interface(Logger):
                 height = constants.net.max_checkpoint()
                 checkp = True
             header = await self.get_block_header(height, 'backward')
-            chain = blockchain.check_header(
-                header) if 'mock' not in header else header['mock']['check'](header)
-            can_connect = blockchain.can_connect(
-                header) if 'mock' not in header else header['mock']['connect'](height)
+            chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
+            can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
             if chain or can_connect:
                 return False
             if checkp:
-                raise GracefulDisconnect(
-                    "server chain conflicts with checkpoints")
+                raise GracefulDisconnect("server chain conflicts with checkpoints")
             return True
 
         bad, bad_header = height, header
         _assert_header_does_not_check_against_any_chain(bad_header)
-        with blockchain.blockchains_lock:
-            chains = list(blockchain.blockchains.values())
-        local_max = max([0] + [x.height() for x in chains]
-                        ) if 'mock' not in header else float('inf')
+        with blockchain.blockchains_lock: chains = list(blockchain.blockchains.values())
+        local_max = max([0] + [x.height() for x in chains]) if 'mock' not in header else float('inf')
         height = min(local_max + 1, height - 1)
         while await iterate():
             bad, bad_header = height, header
@@ -949,11 +941,9 @@ class Interface(Logger):
 
     def ip_addr(self) -> Optional[str]:
         session = self.session
-        if not session:
-            return None
+        if not session: return None
         peer_addr = session.remote_address()
-        if not peer_addr:
-            return None
+        if not peer_addr: return None
         return str(peer_addr.host)
 
     def bucket_based_on_ipaddress(self) -> str:
@@ -961,8 +951,7 @@ class Interface(Logger):
             if self.is_tor():
                 return BUCKET_NAME_OF_ONION_SERVERS
             try:
-                # type: Union[IPv4Address, IPv6Address]
-                ip_addr = ip_address(self.ip_addr())
+                ip_addr = ip_address(self.ip_addr())  # type: Union[IPv4Address, IPv6Address]
             except ValueError:
                 return ''
             if not ip_addr:
@@ -989,8 +978,7 @@ class Interface(Logger):
         # do request
         res = await self.session.send_request('blockchain.transaction.get_merkle', [tx_hash, tx_height])
         # check response
-        block_height = assert_dict_contains_field(
-            res, field_name='block_height')
+        block_height = assert_dict_contains_field(res, field_name='block_height')
         merkle = assert_dict_contains_field(res, field_name='merkle')
         pos = assert_dict_contains_field(res, field_name='pos')
         # note: tx_height was just a hint to the server, don't enforce the response to match it
@@ -1007,17 +995,14 @@ class Interface(Logger):
         raw = await self.session.send_request('blockchain.transaction.get', [tx_hash], timeout=timeout)
         # validate response
         if not is_hex_str(raw):
-            raise RequestCorrupted(
-                f"received garbage (non-hex) as tx data (txid {tx_hash}): {raw!r}")
+            raise RequestCorrupted(f"received garbage (non-hex) as tx data (txid {tx_hash}): {raw!r}")
         tx = Transaction(raw)
         try:
             tx.deserialize()  # see if raises
         except Exception as e:
-            raise RequestCorrupted(
-                f"cannot deserialize received transaction (txid {tx_hash})") from e
+            raise RequestCorrupted(f"cannot deserialize received transaction (txid {tx_hash})") from e
         if tx.txid() != tx_hash:
             raise RequestCorrupted(f"received tx does not match expected txid {tx_hash} (got {tx.txid()})")
-
         return raw
 
     async def get_history_for_scripthash(self, sh: str) -> List[dict]:
@@ -1036,21 +1021,18 @@ class Interface(Logger):
             if height in (-1, 0):
                 assert_dict_contains_field(tx_item, field_name='fee')
                 assert_non_negative_integer(tx_item['fee'])
-                # this ensures confirmed txs can't follow mempool txs
-                prev_height = - float("inf")
+                prev_height = float("inf")  # this ensures confirmed txs can't follow mempool txs
             else:
                 # check monotonicity of heights
                 if height < prev_height:
-                    raise RequestCorrupted(
-                        f'heights of confirmed txs must be in increasing order')
+                    raise RequestCorrupted(f'heights of confirmed txs must be in increasing order')
                 prev_height = height
         hashes = set(map(lambda item: item['tx_hash'], res))
         if len(hashes) != len(res):
             # Either server is sending garbage... or maybe if server is race-prone
             # a recently mined tx could be included in both last block and mempool?
             # Still, it's simplest to just disregard the response.
-            raise RequestCorrupted(
-                f"server history has non-unique txids for sh={sh}")
+            raise RequestCorrupted(f"server history has non-unique txids for sh={sh}")
         return res
 
     async def listunspent_for_scripthash(self, sh: str) -> List[dict]:
@@ -1080,7 +1062,7 @@ class Interface(Logger):
         assert_dict_contains_field(res, field_name='confirmed')
         assert_dict_contains_field(res, field_name='unconfirmed')
         assert_non_negative_integer(res['confirmed'])
-        assert_non_negative_integer(res['unconfirmed'])
+        assert_integer(res['unconfirmed'])
         return res
 
     async def get_txid_from_txpos(self, tx_height: int, tx_pos: int, merkle: bool):
@@ -1136,8 +1118,7 @@ class Interface(Logger):
         if not bitcoin.is_address(res):
             # note: do not hard-fail -- allow server to use future-type
             #       bitcoin address we do not recognize
-            self.logger.info(
-                f"invalid donation address from server: {repr(res)}")
+            self.logger.info(f"invalid donation address from server: {repr(res)}")
             res = ''
         return res
 
@@ -1154,11 +1135,29 @@ class Interface(Logger):
     async def get_estimatefee(self, num_blocks: int) -> int:
         """Returns a feerate estimate for getting confirmed within
         num_blocks blocks, in sat/kbyte.
+        Returns -1 if the server could not provide an estimate.
         """
         if not is_non_negative_integer(num_blocks):
             raise Exception(f"{repr(num_blocks)} is not a num_blocks")
         # do request
-        res = await self.session.send_request('blockchain.estimatefee', [num_blocks])
+        try:
+            res = await self.session.send_request('blockchain.estimatefee', [num_blocks])
+        except aiorpcx.jsonrpc.ProtocolError as e:
+            # The protocol spec says the server itself should already have returned -1
+            # if it cannot provide an estimate, however apparently "electrs" does not conform
+            # and sends an error instead. Convert it here:
+            if "cannot estimate fee" in e.message:
+                res = -1
+            else:
+                raise
+        except aiorpcx.jsonrpc.RPCError as e:
+            # The protocol spec says the server itself should already have returned -1
+            # if it cannot provide an estimate. "Fulcrum" often sends:
+            #   aiorpcx.jsonrpc.RPCError: (-32603, 'internal error: bitcoind request timed out')
+            if e.code == JSONRPC.INTERNAL_ERROR:
+                res = -1
+            else:
+                raise
         # check response
         if res != -1:
             assert_non_negative_int_or_float(res)
@@ -1167,8 +1166,7 @@ class Interface(Logger):
 
 
 def _assert_header_does_not_check_against_any_chain(header: dict) -> None:
-    chain_bad = blockchain.check_header(
-        header) if 'mock' not in header else header['mock']['check'](header)
+    chain_bad = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
     if chain_bad:
         raise Exception('bad_header must not check!')
 
@@ -1177,18 +1175,18 @@ def check_cert(host, cert):
     try:
         b = pem.dePem(cert, 'CERTIFICATE')
         x = x509.X509(b)
-    except:
+    except Exception:
         traceback.print_exc(file=sys.stdout)
         return
 
     try:
         x.check_date()
         expired = False
-    except:
+    except Exception:
         expired = True
 
-    m = "host: %s\n" % host
-    m += "has_expired: %s\n" % expired
+    m = "host: %s\n"%host
+    m += "has_expired: %s\n"% expired
     util.print_msg(m)
 
 
@@ -1206,11 +1204,10 @@ def test_certificates():
     mydir = os.path.join(config.path, "certs")
     certs = os.listdir(mydir)
     for c in certs:
-        p = os.path.join(mydir, c)
+        p = os.path.join(mydir,c)
         with open(p, encoding='utf-8') as f:
             cert = f.read()
         check_cert(c, cert)
-
 
 if __name__ == "__main__":
     test_certificates()

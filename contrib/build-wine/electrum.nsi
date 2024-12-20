@@ -6,7 +6,7 @@
 ;--------------------------------
 ;Variables
 
-  !define PRODUCT_NAME "Electrum-WAF"
+  !define PRODUCT_NAME "Electrum"
   !define PRODUCT_WEB_SITE "https://github.com/spesmilo/electrum"
   !define PRODUCT_PUBLISHER "Electrum Technologies GmbH"
   !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -72,7 +72,7 @@
   !define MUI_ABORTWARNING
   !define MUI_ABORTWARNING_TEXT "Are you sure you wish to abort the installation of ${PRODUCT_NAME}?"
 
-  !define MUI_ICON "c:\electrum\electrum\gui\icons\electrum.ico"
+  !define MUI_ICON "..\..\electrum\gui\icons\electrum.ico"
 
 ;--------------------------------
 ;Pages
@@ -111,7 +111,7 @@ Section
 
   ;Files to pack into the installer
   File /r "dist\electrum\*.*"
-  File "c:\electrum\electrum\gui\icons\electrum.ico"
+  File "..\..\electrum\gui\icons\electrum.ico"
 
   ;Store installation folder
   WriteRegStr HKCU "Software\${PRODUCT_NAME}" "" $INSTDIR

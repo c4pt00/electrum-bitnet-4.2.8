@@ -7,6 +7,7 @@ from typing import Union, TYPE_CHECKING
 
 import base64
 
+from electrum import util
 from electrum.plugin import BasePlugin, hook
 from electrum.crypto import aes_encrypt_with_iv, aes_decrypt_with_iv
 from electrum.i18n import _
@@ -39,6 +40,7 @@ class LabelsPlugin(BasePlugin):
     def encode(self, wallet: 'Abstract_Wallet', msg: str) -> str:
         password, iv, wallet_id = self.wallets[wallet]
         encrypted = aes_encrypt_with_iv(password, iv, msg.encode('utf8'))
+        # FIXME: ^ we are reusing the IV between all labels in the wallet, in CBC mode...
         return base64.b64encode(encrypted).decode()
 
     def decode(self, wallet: 'Abstract_Wallet', message: str) -> str:
@@ -65,12 +67,19 @@ class LabelsPlugin(BasePlugin):
             return
         if not item:
             return
+        if label is None:
+            # note: the server should not know whether a label is empty
+            #       FIXME but it does! we are reusing the IV with AES-CBC: there is no randomness between labels,
+            #       all empty labels in given wallet look the same.
+            label = ''
         nonce = self.get_nonce(wallet)
         wallet_id = self.wallets[wallet][2]
-        bundle = {"walletId": wallet_id,
-                  "walletNonce": nonce,
-                  "externalId": self.encode(wallet, item),
-                  "encryptedLabel": self.encode(wallet, label)}
+        bundle = {
+            "walletId": wallet_id,
+            "walletNonce": nonce,
+            "externalId": self.encode(wallet, item),
+            "encryptedLabel": self.encode(wallet, label)
+        }
         asyncio.run_coroutine_threadsafe(self.do_post_safe("/label", bundle), wallet.network.asyncio_loop)
         # Caller will write the wallet
         self.set_nonce(wallet, nonce + 1)
@@ -111,7 +120,7 @@ class LabelsPlugin(BasePlugin):
             try:
                 encoded_key = self.encode(wallet, key)
                 encoded_value = self.encode(wallet, value)
-            except:
+            except Exception:
                 self.logger.info(f'cannot encode {repr(key)} {repr(value)}')
                 continue
             bundle["labels"].append({'encryptedLabel': encoded_value,
@@ -129,34 +138,36 @@ class LabelsPlugin(BasePlugin):
             response = await self.do_get("/labels/since/%d/for/%s" % (nonce, wallet_id))
         except Exception as e:
             raise ErrorConnectingServer(e) from e
-        if response["labels"] is None:
+        if response["labels"] is None or len(response["labels"]) == 0:
             self.logger.info('no new labels')
             return
+
+        self.logger.info(f'received {len(response["labels"])} labels')
         result = {}
         for label in response["labels"]:
             try:
                 key = self.decode(wallet, label["externalId"])
                 value = self.decode(wallet, label["encryptedLabel"])
-            except:
+            except Exception:
                 continue
             try:
                 json.dumps(key)
                 json.dumps(value)
-            except:
+            except Exception:
                 self.logger.info(f'error: no json {key}')
                 continue
-            result[key] = value
+            if value:
+                result[key] = value
 
         for key, value in result.items():
-            if force or not wallet.get_label(key):
-                wallet._set_label(key, value)
+            wallet._set_label(key, value)
 
-        self.logger.info(f"received {len(response)} labels")
         self.set_nonce(wallet, response["nonce"] + 1)
+        util.trigger_callback('labels_received', wallet, result)
         self.on_pulled(wallet)
 
     def on_pulled(self, wallet: 'Abstract_Wallet') -> None:
-        raise NotImplementedError()
+        pass
 
     @ignore_exceptions
     @log_exceptions
@@ -167,15 +178,18 @@ class LabelsPlugin(BasePlugin):
             self.logger.info(repr(e))
 
     def pull(self, wallet: 'Abstract_Wallet', force: bool):
-        if not wallet.network: raise Exception(_('You are offline.'))
+        if not wallet.network:
+            raise Exception(_('You are offline.'))
         return asyncio.run_coroutine_threadsafe(self.pull_thread(wallet, force), wallet.network.asyncio_loop).result()
 
     def push(self, wallet: 'Abstract_Wallet'):
-        if not wallet.network: raise Exception(_('You are offline.'))
+        if not wallet.network:
+            raise Exception(_('You are offline.'))
         return asyncio.run_coroutine_threadsafe(self.push_thread(wallet), wallet.network.asyncio_loop).result()
 
     def start_wallet(self, wallet: 'Abstract_Wallet'):
-        if not wallet.network: return  # 'offline' mode
+        if not wallet.network:
+            return  # 'offline' mode
         mpk = wallet.get_fingerprint()
         if not mpk:
             return

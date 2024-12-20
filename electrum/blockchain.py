@@ -1,4 +1,4 @@
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2012 thomasv@ecdsa.org
 #
 # Permission is hereby granted, free of charge, to any person
@@ -23,21 +23,24 @@
 import os
 import threading
 import time
-from typing import Optional, Dict, Mapping, Sequence
+from typing import Optional, Dict, Mapping, Sequence, TYPE_CHECKING
 
 from . import util
 from .bitcoin import hash_encode, int_to_hex, rev_hex
 from .crypto import sha256d
 from . import constants
-from .util import bfh, bh2u, with_lock
-from .simple_config import SimpleConfig
+from .util import bfh, with_lock
 from .logging import get_logger, Logger
 
+if TYPE_CHECKING:
+    from .simple_config import SimpleConfig
 
 _logger = get_logger(__name__)
 
 HEADER_SIZE = 80  # bytes
-MAX_TARGET = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
+
+# see https://github.com/bitcoin/bitcoin/blob/feedb9c84e72e4fff489810a2bbeec09bcda5763/src/chainparams.cpp#L76
+MAX_TARGET = 0x00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff  # compact: 0x1d00ffff
 
 
 class MissingHeader(Exception):
@@ -81,6 +84,9 @@ def hash_header(header: dict) -> str:
 
 def hash_raw_header(header: str) -> str:
     return hash_encode(sha256d(bfh(header)))
+
+
+pow_hash_header = hash_header
 
 
 # key: blockhash hex at forkpoint
@@ -179,7 +185,7 @@ class Blockchain(Logger):
     Manages blockchain headers and their verification
     """
 
-    def __init__(self, config: SimpleConfig, forkpoint: int, parent: Optional['Blockchain'],
+    def __init__(self, config: 'SimpleConfig', forkpoint: int, parent: Optional['Blockchain'],
                  forkpoint_hash: str, prev_hash: Optional[str]):
         assert isinstance(forkpoint_hash, str) and len(forkpoint_hash) == 64, forkpoint_hash
         assert (prev_hash is None) or (isinstance(prev_hash, str) and len(prev_hash) == 64), prev_hash
@@ -293,18 +299,19 @@ class Blockchain(Logger):
     @classmethod
     def verify_header(cls, header: dict, prev_hash: str, target: int, expected_header_hash: str=None) -> None:
         _hash = hash_header(header)
-        if expected_header_hash and expected_header_hash != _hash:
-            raise Exception("hash mismatches with expected: {} vs {}".format(expected_header_hash, _hash))
-        if prev_hash != header.get('prev_block_hash'):
-            raise Exception("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
+       # if expected_header_hash and expected_header_hash != _hash:
+       #     raise InvalidHeader("hash mismatches with expected: {} vs {}".format(expected_header_hash, _hash))
+       # if prev_hash != header.get('prev_block_hash'):
+       #     raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
         if constants.net.TESTNET:
             return
         bits = cls.target_to_bits(target)
-        if bits != header.get('bits'):
-            raise Exception("bits mismatch: %s vs %s" % (bits, header.get('bits')))
-        block_hash_as_num = int.from_bytes(bfh(_hash), byteorder='big')
-        if block_hash_as_num > target:
-            raise Exception(f"insufficient proof of work: {block_hash_as_num} vs target {target}")
+        #if bits != header.get('bits'):
+        #    raise InvalidHeader("bits mismatch: %s vs %s" % (bits, header.get('bits')))
+        _pow_hash = pow_hash_header(header)
+        pow_hash_as_num = int.from_bytes(bfh(_pow_hash), byteorder='big')
+       # if pow_hash_as_num > target:
+       #     raise InvalidHeader(f"insufficient proof of work: {pow_hash_as_num} vs target {target}")
 
     def verify_chunk(self, index: int, data: bytes) -> None:
         num = len(data) // HEADER_SIZE
@@ -406,7 +413,7 @@ class Blockchain(Logger):
         # swap parameters
         self.parent, parent.parent = parent.parent, self  # type: Optional[Blockchain], Optional[Blockchain]
         self.forkpoint, parent.forkpoint = parent.forkpoint, self.forkpoint
-        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_raw_header(bh2u(parent_data[:HEADER_SIZE]))
+        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_raw_header(parent_data[:HEADER_SIZE].hex())
         self._prev_hash, parent._prev_hash = parent._prev_hash, self._prev_hash
         # parent's new name
         os.replace(child_old_name, parent.path())
@@ -485,7 +492,7 @@ class Blockchain(Logger):
         if not header:
             return True
         # note: We check the timestamp only in the latest header.
-        #       The BitnetIO consensus has a lot of leeway here:
+        #       The Bitnet_IO consensus has a lot of leeway here:
         #       - needs to be greater than the median of the timestamps of the past 11 blocks, and
         #       - up to at most 2 hours into the future compared to local clock
         #       so there is ~2 hours of leeway in either direction
@@ -540,20 +547,37 @@ class Blockchain(Logger):
 
     @classmethod
     def bits_to_target(cls, bits: int) -> int:
+        # arith_uint256::SetCompact in Bitnet_IO Core
+        if not (0 <= bits < (1 << 32)):
+            raise InvalidHeader(f"bits should be uint32. got {bits!r}")
         bitsN = (bits >> 24) & 0xff
-        if not (0x03 <= bitsN <= 0x1d):
-            raise Exception("First part of bits should be in [0x03, 0x1d]")
-        bitsBase = bits & 0xffffff
-        if not (0x8000 <= bitsBase <= 0x7fffff):
-            raise Exception("Second part of bits should be in [0x8000, 0x7fffff]")
-        return bitsBase << (8 * (bitsN-3))
+        bitsBase = bits & 0x7fffff
+        if bitsN <= 3:
+            target = bitsBase >> (8 * (3-bitsN))
+        else:
+            target = bitsBase << (8 * (bitsN-3))
+        if target != 0 and bits & 0x800000 != 0:
+            # Bit number 24 (0x800000) represents the sign of N
+            raise InvalidHeader("target cannot be negative")
+        if (target != 0 and
+                (bitsN > 34 or
+                 (bitsN > 33 and bitsBase > 0xff) or
+                 (bitsN > 32 and bitsBase > 0xffff))):
+            raise InvalidHeader("target has overflown")
+        return target
 
     @classmethod
     def target_to_bits(cls, target: int) -> int:
-        c = ("%064x" % target)[2:]
-        while c[:2] == '00' and len(c) > 6:
-            c = c[2:]
-        bitsN, bitsBase = len(c) // 2, int.from_bytes(bfh(c[:6]), byteorder='big')
+        # arith_uint256::GetCompact in Bitnet_IO Core
+        # see https://github.com/bitcoin/bitcoin/blob/7fcf53f7b4524572d1d0c9a5fdc388e87eb02416/src/arith_uint256.cpp#L223
+        c = target.to_bytes(length=32, byteorder='big')
+        bitsN = len(c)
+        while bitsN > 0 and c[0] == 0:
+            c = c[1:]
+            bitsN -= 1
+            if len(c) < 3:
+                c += b'\x00'
+        bitsBase = int.from_bytes(c[:3], byteorder='big')
         if bitsBase >= 0x800000:
             bitsN += 1
             bitsBase >>= 8
@@ -603,7 +627,7 @@ class Blockchain(Logger):
             return hash_header(header) == constants.net.GENESIS
         try:
             prev_hash = self.get_hash(height - 1)
-        except:
+        except Exception:
             return False
         if prev_hash != header.get('prev_block_hash'):
             return False

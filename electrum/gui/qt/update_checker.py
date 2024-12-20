@@ -4,7 +4,6 @@
 
 import asyncio
 import base64
-from distutils.version import StrictVersion
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLabel, QProgressBar,
@@ -17,6 +16,7 @@ from electrum.i18n import _
 from electrum.util import make_aiohttp_session
 from electrum.logging import Logger
 from electrum.network import Network
+from electrum._vendor.distutils.version import StrictVersion
 
 
 class UpdateCheck(QDialog, Logger):
@@ -48,8 +48,8 @@ class UpdateCheck(QDialog, Logger):
         self.content.addWidget(self.pb)
 
         versions = QHBoxLayout()
-        versions.addWidget(QLabel(_("Current version: {}".format(version.ELECTRUM_VERSION))))
-        self.latest_version_label = QLabel(_("Latest version: {}".format(" ")))
+        versions.addWidget(QLabel(_("Current version: {}").format(version.ELECTRUM_VERSION)))
+        self.latest_version_label = QLabel(_("Latest version: {}").format(" "))
         versions.addWidget(self.latest_version_label)
         self.content.addLayout(versions)
 
@@ -75,13 +75,13 @@ class UpdateCheck(QDialog, Logger):
         self.pb.hide()
 
     @staticmethod
-#    def is_newer(latest_version):
-#       return latest_version > StrictVersion(version.ELECTRUM_VERSION)
+    def is_newer(latest_version):
+        return latest_version > StrictVersion(version.ELECTRUM_VERSION)
 
     def update_view(self, latest_version=None):
         if latest_version:
             self.pb.hide()
-            self.latest_version_label.setText(_("Latest version: {}".format(latest_version)))
+            self.latest_version_label.setText(_("Latest version: {}").format(latest_version))
             if self.is_newer(latest_version):
                 self.heading_label.setText('<h2>' + _("There is a new update available") + '</h2>')
                 url = "<a href='{u}'>{u}</a>".format(u=UpdateCheck.download_url)
@@ -124,7 +124,7 @@ class UpdateCheckThread(QThread, Logger):
                     sig = base64.b64decode(sig)
                     msg = version_num.encode('utf-8')
                     if ecc.verify_message_with_address(address=address, sig65=sig, message=msg,
-                                                       net=constants.BitnetIOMainnet):
+                                                       net=constants.Bitnet_IOMainnet):
                         self.logger.info(f"valid sig for version announcement '{version_num}' from address '{address}'")
                         break
                 else:

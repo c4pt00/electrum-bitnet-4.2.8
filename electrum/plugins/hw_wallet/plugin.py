@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 # -*- mode: python -*-
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2016  The Electrum developers
 #
 # Permission is hereby granted, free of charge, to any person
@@ -23,29 +23,29 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+from abc import abstractmethod, ABC
+from typing import TYPE_CHECKING, Sequence, Optional, Type, Iterable, Any
 
-from typing import TYPE_CHECKING, Dict, List, Union, Tuple, Sequence, Optional, Type, Iterable, Any
-from functools import partial
-
-from electrum.plugin import (BasePlugin, hook, Device, DeviceMgr, DeviceInfo,
+from electrum.plugin import (BasePlugin, hook, Device, DeviceMgr,
                              assert_runs_in_hwd_thread, runs_in_hwd_thread)
 from electrum.i18n import _
 from electrum.bitcoin import is_address, opcodes
-from electrum.util import bfh, versiontuple, UserFacingException
-from electrum.transaction import TxOutput, Transaction, PartialTransaction, PartialTxInput, PartialTxOutput
+from electrum.util import versiontuple, UserFacingException
+from electrum.transaction import TxOutput, PartialTransaction
 from electrum.bip32 import BIP32Node
 from electrum.storage import get_derivation_used_for_hw_device_encryption
 from electrum.keystore import Xpub, Hardware_KeyStore
 
 if TYPE_CHECKING:
     import threading
+    from electrum.plugin import DeviceInfo
     from electrum.wallet import Abstract_Wallet
-    from electrum.base_wizard import BaseWizard
 
 
-class HW_PluginBase(BasePlugin):
+class HW_PluginBase(BasePlugin, ABC):
     keystore_class: Type['Hardware_KeyStore']
     libraries_available: bool
+    SUPPORTED_XTYPES = ()
 
     # define supported library versions:  minimum_library <= x < maximum_library
     minimum_library = (0,)
@@ -66,13 +66,14 @@ class HW_PluginBase(BasePlugin):
         return self.parent.device_manager
 
     def create_device_from_hid_enumeration(self, d: dict, *, product_key) -> Optional['Device']:
+        # note: id_ needs to be unique between simultaneously connected devices,
+        #       and ideally unchanged while a device is connected.
         # Older versions of hid don't provide interface_number
         interface_number = d.get('interface_number', -1)
         usage_page = d['usage_page']
-        id_ = d['serial_number']
-        if len(id_) == 0:
-            id_ = str(d['path'])
-        id_ += str(interface_number) + str(usage_page)
+        # id_=str(d['path']) in itself might be sufficient, but this had to be touched
+        # a number of times already, so let's just go for the overkill approach:
+        id_ = f"{d['path']},{d['serial_number']},{interface_number},{usage_page}"
         device = Device(path=d['path'],
                         interface_number=interface_number,
                         id_=id_,
@@ -85,28 +86,9 @@ class HW_PluginBase(BasePlugin):
     def close_wallet(self, wallet: 'Abstract_Wallet'):
         for keystore in wallet.get_keystores():
             if isinstance(keystore, self.keystore_class):
-                self.device_manager().unpair_xpub(keystore.xpub)
+                self.device_manager().unpair_pairing_code(keystore.pairing_code())
                 if keystore.thread:
                     keystore.thread.stop()
-
-    def scan_and_create_client_for_device(self, *, device_id: str, wizard: 'BaseWizard') -> 'HardwareClientBase':
-        devmgr = self.device_manager()
-        client = wizard.run_task_without_blocking_gui(
-            task=partial(devmgr.client_by_id, device_id))
-        if client is None:
-            raise UserFacingException(_('Failed to create a client for this device.') + '\n' +
-                                      _('Make sure it is in the correct state.'))
-        client.handler = self.create_handler(wizard)
-        return client
-
-    def setup_device(self, device_info: DeviceInfo, wizard: 'BaseWizard', purpose) -> 'HardwareClientBase':
-        """Called when creating a new wallet or when using the device to decrypt
-        an existing wallet. Select the device to use.  If the device is
-        uninitialized, go through the initialization process.
-
-        Runs in GUI thread.
-        """
-        raise NotImplementedError()
 
     def get_client(self, keystore: 'Hardware_KeyStore', force_pair: bool = True, *,
                    devices: Sequence['Device'] = None,
@@ -125,7 +107,7 @@ class HW_PluginBase(BasePlugin):
         if keystore is None:
             keystore = wallet.get_keystore()
         if not is_address(address):
-            keystore.handler.show_error(_('Invalid BitnetIO Address'))
+            keystore.handler.show_error(_('Invalid Bitnet_IO Address'))
             return False
         if not wallet.is_mine(address):
             keystore.handler.show_error(_('Address not in wallet.'))
@@ -156,7 +138,11 @@ class HW_PluginBase(BasePlugin):
                     or versiontuple(library_version) < self.minimum_library
                     or versiontuple(library_version) >= self.maximum_library):
                 raise LibraryFoundButUnusable(library_version=library_version)
-        except ImportError:
+        except ImportError as e:
+            self.libraries_available_message = (
+                _("Missing libraries for {}.").format(self.name)
+                + f"\n    {e!r}"
+            )
             return False
         except LibraryFoundButUnusable as e:
             library_version = e.library_version
@@ -187,11 +173,8 @@ class HW_PluginBase(BasePlugin):
                       handler: Optional['HardwareHandlerBase']) -> Optional['HardwareClientBase']:
         raise NotImplementedError()
 
-    def get_xpub(self, device_id: str, derivation: str, xtype, wizard: 'BaseWizard') -> str:
-        raise NotImplementedError()
-
     def create_handler(self, window) -> 'HardwareHandlerBase':
-        # note: in Qt GUI, 'window' is either an ElectrumWindow or an InstallWizard
+        # note: in Qt GUI, 'window' is either an ElectrumWindow or an QENewWalletWizard
         raise NotImplementedError()
 
     def can_recognize_device(self, device: Device) -> bool:
@@ -200,9 +183,14 @@ class HW_PluginBase(BasePlugin):
         """
         return device.product_key in self.DEVICE_IDS
 
+    @abstractmethod
+    def wizard_entry_for_device(self, device_info: 'DeviceInfo', *, new_wallet: bool) -> str:
+        """Return view name for device
+        """
+        pass
 
-class HardwareClientBase:
 
+class HardwareClientBase(ABC):
     handler = None  # type: Optional['HardwareHandlerBase']
 
     def __init__(self, *, plugin: 'HW_PluginBase'):
@@ -212,18 +200,21 @@ class HardwareClientBase:
     def device_manager(self) -> 'DeviceMgr':
         return self.plugin.device_manager()
 
+    @abstractmethod
     def is_pairable(self) -> bool:
-        raise NotImplementedError()
-
-    def close(self):
-        raise NotImplementedError()
-
-    def timeout(self, cutoff) -> None:
         pass
 
+    @abstractmethod
+    def close(self):
+        pass
+
+    def timeout(self, cutoff) -> None:  # noqa: B027
+        pass
+
+    @abstractmethod
     def is_initialized(self) -> bool:
         """True if initialized, False if wiped."""
-        raise NotImplementedError()
+        pass
 
     def label(self) -> Optional[str]:
         """The name given by the user to the device.
@@ -243,14 +234,16 @@ class HardwareClientBase:
         during USB device enumeration (called for each unpaired device).
         Stored in the wallet file.
         """
-        # This functionality is optional. If not implemented just return None:
-        return None
+        root_fp = self.request_root_fingerprint_from_device()
+        return root_fp
 
+    @abstractmethod
     def has_usable_connection_with_device(self) -> bool:
-        raise NotImplementedError()
+        pass
 
+    @abstractmethod
     def get_xpub(self, bip32_path: str, xtype) -> str:
-        raise NotImplementedError()
+        pass
 
     @runs_in_hwd_thread
     def request_root_fingerprint_from_device(self) -> str:
@@ -271,15 +264,9 @@ class HardwareClientBase:
     def device_model_name(self) -> Optional[str]:
         """Return the name of the model of this device, which might be displayed in the UI.
         E.g. for Trezor, "Trezor One" or "Trezor T".
+        If this method is not defined for a plugin, the plugin name is used as default
         """
-        return None
-
-    def manipulate_keystore_dict_during_wizard_setup(self, d: dict) -> None:
-        """Called during wallet creation in the wizard, before the keystore
-        is constructed for the first time. 'd' is the dict that will be
-        passed to the keystore constructor.
-        """
-        pass
+        return self.plugin.name
 
 
 class HardwareHandlerBase:
@@ -349,25 +336,6 @@ def validate_op_return_output(output: TxOutput, *, max_size: int = None) -> None
         raise UserFacingException(_("Amount for OP_RETURN output must be zero."))
 
 
-def get_xpubs_and_der_suffixes_from_txinout(tx: PartialTransaction,
-                                            txinout: Union[PartialTxInput, PartialTxOutput]) \
-        -> List[Tuple[str, List[int]]]:
-    xfp_to_xpub_map = {xfp: bip32node for bip32node, (xfp, path)
-                       in tx.xpubs.items()}  # type: Dict[bytes, BIP32Node]
-    xfps = [txinout.bip32_paths[pubkey][0] for pubkey in txinout.pubkeys]
-    try:
-        xpubs = [xfp_to_xpub_map[xfp] for xfp in xfps]
-    except KeyError as e:
-        raise Exception(f"Partial transaction is missing global xpub for "
-                        f"fingerprint ({str(e)}) in input/output") from e
-    xpubs_and_deriv_suffixes = []
-    for bip32node, pubkey in zip(xpubs, txinout.pubkeys):
-        xfp, path = txinout.bip32_paths[pubkey]
-        der_suffix = list(path)[bip32node.depth:]
-        xpubs_and_deriv_suffixes.append((bip32node.to_xpub(), der_suffix))
-    return xpubs_and_deriv_suffixes
-
-
 def only_hook_if_libraries_available(func):
     # note: this decorator must wrap @hook, not the other way around,
     # as 'hook' uses the name of the function it wraps
@@ -393,3 +361,9 @@ class OutdatedHwFirmwareException(UserFacingException):
             return str(self) + "\n\n" + suffix
         else:
             return suffix
+
+
+class OperationCancelled(UserFacingException):
+    """Emitted when an operation is cancelled by user on a HW device
+    """
+    pass

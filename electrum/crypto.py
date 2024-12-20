@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Electrum - lightweight BitnetIO client
+# Electrum - lightweight Bitnet_IO client
 # Copyright (C) 2018 The Electrum developers
 #
 # Permission is hereby granted, free of charge, to any person
@@ -24,11 +24,12 @@
 # SOFTWARE.
 
 import base64
+import binascii
 import os
 import sys
 import hashlib
 import hmac
-from typing import Union
+from typing import Union, Mapping, Optional
 
 from .util import assert_bytes, InvalidPassword, to_bytes, to_string, WalletFileException, versiontuple
 from .i18n import _
@@ -41,7 +42,7 @@ _logger = get_logger(__name__)
 HAS_PYAES = False
 try:
     import pyaes
-except:
+except Exception:
     pass
 else:
     HAS_PYAES = True
@@ -56,7 +57,7 @@ try:
     from Cryptodome.Cipher import ChaCha20_Poly1305 as CD_ChaCha20_Poly1305
     from Cryptodome.Cipher import ChaCha20 as CD_ChaCha20
     from Cryptodome.Cipher import AES as CD_AES
-except:
+except Exception:
     pass
 else:
     HAS_CRYPTODOME = True
@@ -74,7 +75,7 @@ try:
     from cryptography.hazmat.primitives.ciphers import modes as CG_modes
     from cryptography.hazmat.backends import default_backend as CG_default_backend
     import cryptography.hazmat.primitives.ciphers.aead as CG_aead
-except:
+except Exception:
     pass
 else:
     HAS_CRYPTOGRAPHY = True
@@ -84,7 +85,32 @@ if not (HAS_CRYPTODOME or HAS_CRYPTOGRAPHY):
     sys.exit(f"Error: at least one of ('pycryptodomex', 'cryptography') needs to be installed.")
 
 
+def version_info() -> Mapping[str, Optional[str]]:
+    ret = {}
+    if HAS_PYAES:
+        ret["pyaes.version"] = ".".join(map(str, pyaes.VERSION[:3]))
+    else:
+        ret["pyaes.version"] = None
+    if HAS_CRYPTODOME:
+        ret["cryptodome.version"] = Cryptodome.__version__
+        if hasattr(Cryptodome, "__path__"):
+            ret["cryptodome.path"] = ", ".join(Cryptodome.__path__ or [])
+    else:
+        ret["cryptodome.version"] = None
+    if HAS_CRYPTOGRAPHY:
+        ret["cryptography.version"] = cryptography.__version__
+        if hasattr(cryptography, "__path__"):
+            ret["cryptography.path"] = ", ".join(cryptography.__path__ or [])
+    else:
+        ret["cryptography.version"] = None
+    return ret
+
+
 class InvalidPadding(Exception):
+    pass
+
+
+class CiphertextFormatError(Exception):
     pass
 
 
@@ -146,22 +172,11 @@ def aes_decrypt_with_iv(key: bytes, iv: bytes, data: bytes) -> bytes:
         raise InvalidPassword()
 
 
-def EncodeAES_base64(secret: bytes, msg: bytes) -> bytes:
-    """Returns base64 encoded ciphertext."""
-    e = EncodeAES_bytes(secret, msg)
-    return base64.b64encode(e)
-
-
 def EncodeAES_bytes(secret: bytes, msg: bytes) -> bytes:
     assert_bytes(msg)
     iv = bytes(os.urandom(16))
     ct = aes_encrypt_with_iv(secret, iv, msg)
     return iv + ct
-
-
-def DecodeAES_base64(secret: bytes, ciphertext_b64: Union[bytes, str]) -> bytes:
-    ciphertext = bytes(base64.b64decode(ciphertext_b64))
-    return DecodeAES_bytes(secret, ciphertext)
 
 
 def DecodeAES_bytes(secret: bytes, ciphertext: bytes) -> bytes:
@@ -180,6 +195,8 @@ assert PW_HASH_VERSION_LATEST in SUPPORTED_PW_HASH_VERSIONS
 
 class UnexpectedPasswordHashVersion(InvalidPassword, WalletFileException):
     def __init__(self, version):
+        InvalidPassword.__init__(self)
+        WalletFileException.__init__(self)
         self.version = version
 
     def __str__(self):
@@ -191,6 +208,8 @@ class UnexpectedPasswordHashVersion(InvalidPassword, WalletFileException):
 
 class UnsupportedPasswordHashVersion(InvalidPassword, WalletFileException):
     def __init__(self, version):
+        InvalidPassword.__init__(self)
+        WalletFileException.__init__(self)
         self.version = version
 
     def __str__(self):
@@ -246,7 +265,10 @@ def pw_decode_bytes(data: str, password: Union[bytes, str], *, version:int) -> b
     """base64 ciphertext -> plaintext bytes"""
     if version not in KNOWN_PW_HASH_VERSIONS:
         raise UnexpectedPasswordHashVersion(version)
-    data_bytes = bytes(base64.b64decode(data))
+    try:
+        data_bytes = bytes(base64.b64decode(data, validate=True))
+    except binascii.Error as e:
+        raise CiphertextFormatError("ciphertext not valid base64") from e
     return _pw_decode_raw(data_bytes, password, version=version)
 
 
@@ -263,7 +285,10 @@ def pw_encode_with_version_and_mac(data: bytes, password: Union[bytes, str]) -> 
 
 def pw_decode_with_version_and_mac(data: str, password: Union[bytes, str]) -> bytes:
     """base64 ciphertext -> plaintext bytes"""
-    data_bytes = bytes(base64.b64decode(data))
+    try:
+        data_bytes = bytes(base64.b64decode(data, validate=True))
+    except binascii.Error as e:
+        raise CiphertextFormatError("ciphertext not valid base64") from e
     version = int(data_bytes[0])
     encrypted = data_bytes[1:-4]
     mac = data_bytes[-4:]
@@ -309,7 +334,7 @@ def sha256d(x: Union[bytes, str]) -> bytes:
 def hash_160(x: bytes) -> bytes:
     return ripemd(sha256(x))
 
-def ripemd(x):
+def ripemd(x: bytes) -> bytes:
     try:
         md = hashlib.new('ripemd160')
         md.update(x)
@@ -385,6 +410,9 @@ def chacha20_poly1305_decrypt(
 
 
 def chacha20_encrypt(*, key: bytes, nonce: bytes, data: bytes) -> bytes:
+    """note: for any new protocol you design, please consider using chacha20_poly1305_encrypt instead
+             (for its Authenticated Encryption property).
+    """
     assert isinstance(key, (bytes, bytearray))
     assert isinstance(nonce, (bytes, bytearray))
     assert isinstance(data, (bytes, bytearray))
