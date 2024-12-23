@@ -16,7 +16,7 @@ _logger = get_logger(__name__)
 # hardcoded list
 # TODO for some pubkeys, there are multiple network addresses we could try
 TRAMPOLINE_NODES_MAINNET = {
-    'BITEXPLORER.IO':                  LNPeerAddr(host='bitexplorer.io',           port=9735, pubkey=bytes.fromhex('02b04fcfefd3e83489b4a07d0aa8e0b46fbbbc0222da1e3735ac142c0dfcf52cc5')),
+    'bitlightning':                  LNPeerAddr(host='bitexplorer.io',           port=9735, pubkey=bytes.fromhex('02ab40b8272d4ca6b39d81074ab664988898e9ed951cee868baf08bd1a7e7a273c')),
 }
 
 TRAMPOLINE_NODES_TESTNET = {

@@ -2001,7 +2001,7 @@ class Peer(Logger):
         """Returns True if the HTLC should be failed.
         We must not forward HTLCs with a matching payment_hash to a payment request we created.
         Example attack:
-        - Bob creates payment request with HASH1, for 1 BIT; and gives the payreq to Alice
+        - Bob creates payment request with HASH1, for 1 BTC; and gives the payreq to Alice
         - Alice sends htlc A->B->C, for 1 sat, with HASH1
         - Bob must not release the preimage of HASH1
         """
@@ -2272,7 +2272,7 @@ class Peer(Logger):
             assert low_fee < high_fee, (low_fee, high_fee)
             return not (low_fee < chan_feerate < high_fee)
         if not chan.constraints.is_initiator:
-            if constants.net is not constants.Bitnet_IORegtest:
+            if constants.net is not constants.BitcoinRegtest:
                 chan_feerate = chan.get_latest_feerate(LOCAL)
                 ratio = chan_feerate / feerate_per_kw
                 if ratio < 0.5:

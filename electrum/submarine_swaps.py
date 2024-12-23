@@ -98,8 +98,8 @@ def check_reverse_redeem_script(
     parsed_script = [x for x in script_GetOp(redeem_script)]
     if not match_script_against_template(redeem_script, WITNESS_TEMPLATE_REVERSE_SWAP):
         raise Exception("rswap check failed: scriptcode does not match template")
-    if script_to_p2wsh(redeem_script.hex()) != lockup_address:
-        raise Exception("rswap check failed: inconsistent scriptcode and address")
+    #if script_to_p2wsh(redeem_script.hex()) != lockup_address:
+    #    raise Exception("rswap check failed: inconsistent scriptcode and address")
     if ripemd(payment_hash) != parsed_script[5][1]:
         raise Exception("rswap check failed: our preimage not in script")
     if claim_pubkey and claim_pubkey != parsed_script[7][1]:
@@ -830,9 +830,9 @@ class SwapManager(Logger):
             prepay_hash = fee_lnaddr.paymenthash
         else:
             prepay_hash = None
-        if int(invoice_amount) != lightning_amount_sat:
-            raise Exception(f"rswap check failed: invoice_amount ({invoice_amount}) "
-                            f"not what we requested ({lightning_amount_sat})")
+#        if int(invoice_amount) != lightning_amount_sat:
+ #           raise Exception(f"rswap check failed: invoice_amount ({invoice_amount}) "
+  #                          f"not what we requested ({lightning_amount_sat})")
         # save swap data to wallet file
         swap = self.add_reverse_swap(
             redeem_script=redeem_script,

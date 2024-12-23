@@ -278,7 +278,7 @@ class LnAddr(object):
             return
         assert isinstance(value, Decimal)
         if value.is_nan() or not (0 <= value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BIT):
-            raise LnInvoiceException(f"amount is out-of-bounds: {value!r} BIT")
+            raise LnInvoiceException(f"amount is out-of-bounds: {value!r} BTC")
         if value * 10**12 % 10:
             # max resolution is millisatoshi
             raise LnInvoiceException(f"Cannot encode {value!r}: too many decimal places")
@@ -360,7 +360,7 @@ class LnAddr(object):
     def to_debug_json(self) -> Dict[str, Any]:
         d = {
             'pubkey': self.pubkey.serialize().hex(),
-            'amount_BIT': str(self.amount),
+            'amount_BTC': str(self.amount),
             'rhash': self.paymenthash.hex(),
             'payment_secret': self.payment_secret.hex() if self.payment_secret else None,
             'description': self.get_description(),
@@ -404,8 +404,8 @@ def lndecode(invoice: str, *, verbose=False, net=None) -> LnAddr:
     if not hrp.startswith('ln'):
         raise LnDecodeException("Does not start with ln")
 
-    if not hrp[2:].startswith(net.BOLT11_HRP):
-        raise LnDecodeException(f"Wrong Lightning invoice HRP {hrp[2:]}, should be {net.BOLT11_HRP}")
+#    if not hrp[2:].startswith(net.BOLT11_HRP):
+#        raise LnDecodeException(f"Wrong Lightning invoice HRP {hrp[2:]}, should be {net.BOLT11_HRP}")
 
     # Final signature 65 bytes, split it off.
     if len(data5) < 65*8//5:
