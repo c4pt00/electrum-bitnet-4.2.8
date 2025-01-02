@@ -9,7 +9,9 @@ from .bitcoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BIT
 from .lnaddr import lndecode, LnDecodeException
 
 # note: when checking against these, use .lower() to support case-insensitivity
-BITCOIN_BIP21_URI_SCHEME = 'bitcoin'
+
+#set payment prefix "bitcoin:" for uri encoding string here for deposit
+BITCOIN_BIP21_URI_SCHEME = ''
 LIGHTNING_URI_SCHEME = 'lightning'
 
 

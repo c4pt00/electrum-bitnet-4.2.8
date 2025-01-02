@@ -135,16 +135,16 @@ info "installing pip."
 break_legacy_easy_install
 
 
-#info "preparing electrum-locale."
-#(
-    #cd "$PROJECT_ROOT"
-    #git submodule update --init
+info "preparing electrum-locale."
+(
+    cd "$PROJECT_ROOT"
+    git submodule update --init
 
-    #LOCALE="$PROJECT_ROOT/electrum/locale/"
+    LOCALE="$PROJECT_ROOT/electrum/locale/"
     # we want the binary to have only compiled (.mo) locale files; not source (.po) files
-    #rm -rf "$LOCALE"
-    #"$CONTRIB/build_locale.sh" "$CONTRIB/deterministic-build/electrum-locale/locale/" "$LOCALE"
-#)
+    rm -rf "$LOCALE"
+    "$CONTRIB/build_locale.sh" "$CONTRIB/deterministic-build/electrum-locale/locale/" "$LOCALE"
+)
 
 
 info "Installing build dependencies."

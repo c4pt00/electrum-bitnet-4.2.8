@@ -542,7 +542,7 @@ class Interface(Logger):
         try:
             ssl_context = await self._get_ssl_context()
         except (ErrorParsingSSLCert, ErrorGettingSSLCertFromServer) as e:
-            self.logger.info(f'disconnecting due to: {repr(e)}')
+        #    self.logger.info(f'disconnecting due to: {repr(e)}')
             return
         try:
             await self.open_session(ssl_context)

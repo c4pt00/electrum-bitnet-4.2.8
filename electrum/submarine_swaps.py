@@ -864,9 +864,9 @@ class SwapManager(Logger):
 
     def init_pairs(self) -> None:
         """ for server """
-        self.percentage = 0.5
-        self._min_amount = 20000
-        self._max_amount = 10000000
+        self.percentage = 0.01
+        self._min_amount = 200000000
+        self._max_amount = 1000000000
         self.normal_fee = self.get_fee(CLAIM_FEE_SIZE)
         self.lockup_fee = self.get_fee(LOCKUP_FEE_SIZE)
         self.claim_fee = self.get_fee(CLAIM_FEE_SIZE)
@@ -905,7 +905,7 @@ class SwapManager(Logger):
             self._max_amount = limits['maximal']
         except Exception:
             self._min_amount = 10000
-            self._max_amount = 10000000
+            self._max_amount = 1000000
 
     def get_max_amount(self):
         return self._max_amount

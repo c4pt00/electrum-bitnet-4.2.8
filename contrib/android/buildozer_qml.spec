@@ -1,13 +1,13 @@
 [app]
 
 # (str) Title of your application
-title = Electrum
+title = Electrum-BIT
 
 # (str) Package name
-package.name = Electrum
+package.name = Electrum-BIT
 
 # (str) Package domain (needed for android/ios packaging)
-package.domain = org.electrum
+package.domain = bit.electrum
 
 # (str) Source code where the main.py live
 source.dir = .
@@ -151,7 +151,7 @@ android.gradle_dependencies =
     com.android.support:support-compat:28.0.0,
     me.dm7.barcodescanner:zxing:1.9.8
 
-android.add_activities = org.electrum.qr.SimpleScannerActivity
+android.add_activities = bit.electrum.qr.SimpleScannerActivity
 
 # (list) Put these files or directories in the apk res directory.
 # The option may be used in three ways, the value may contain one or zero ':'

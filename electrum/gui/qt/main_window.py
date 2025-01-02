@@ -787,19 +787,26 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         if d:
             self.show_send_tab()
             host = self.network.get_parameters().server.host
-            self.handle_payment_identifier('bitcoin:%s?message=donation for %s' % (d, host))
+            self.handle_payment_identifier('%s?message=donation for %s' % (d, host))
         else:
             self.show_error(_('No donation address for this server'))
 
     def show_about(self):
-        QMessageBox.about(self, "Electrum",
+        QMessageBox.about(self, "Electrum-BIT",
                           (_("Version")+" %s" % ELECTRUM_VERSION + "\n\n" +
                            _("Electrum's focus is speed, with low resource usage and simplifying Bitnet_IO.") + " " +
                            _("You do not need to perform regular backups, because your wallet can be "
                               "recovered from a secret phrase that you can memorize or write on paper.") + " " +
                            _("Startup times are instant because it operates in conjunction with high-performance "
                               "servers that handle the most complicated parts of the Bitnet_IO system.") + "\n\n" +
-                           _("Uses icons from the Icons8 icon pack (icons8.com).")))
+                           _("    ") + "\n\n" +
+                           _("    ") + "\n\n" +
+                           _("Electrum and ElectrumX server (respectively) is originally published for Bitcoin by different author(s) "
+                              "This copy of Electrum-BIT for Bitnet_IO was heavily modified by dhweinberg.") + "\n\n" +
+                           _("    ") + "\n\n" +
+                           _(" devdataspace@gmail.com    ") + "\n\n" +
+                           _("available for hire to build a custom copy of electrum-wallet or electrumX server for your mainnet coin") + "\n\n" +
+                           _("    "))) 
 
     def show_bitcoin_paper(self):
         filename = os.path.join(self.config.path, 'bitcoin.pdf')
