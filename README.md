@@ -1,5 +1,13 @@
 # Electrum - Lightweight Bitnet_IO client
 
+directories must match by locale build locale when make_apk.sh problem?
+
+```
+./contrib/build_locale.sh locale .
+cp -rf locale contrib/deterministic-build/electrum-locale/
+./contrib/android/make_apk.sh
+```
+
 ```
 Licence: MIT Licence
 Author: Thomas Voegtlin
